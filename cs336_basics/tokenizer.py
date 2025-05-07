@@ -1,10 +1,20 @@
 import re
-import os
+import time
 import regex as re
+import math
 from collections import Counter, defaultdict
-# import multiprocessing # No longer needed
+import multiprocessing
 
 PAT = re.compile(r"\'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+")
+
+# Helper function for parallel pre-tokenization and encoding
+def _process_encode_chunk(chunk):
+    # Process a single chunk: find matches, encode, and return list of byte lists
+    # PAT should be accessible here (global or passed if needed)
+    if not chunk: return []
+    words = [list(m.group(0).encode("utf-8")) for m in PAT.finditer(chunk)]
+    local_counts, local_locations = _calculate_chunk_stats((0,words))
+    return words, local_counts, local_locations
 
 def _merge_word(word, pair, new_id):
     """Merge a single word in place - no string ops, no copies."""
@@ -53,6 +63,29 @@ def _update_word_stats(word, word_idx, pair_counts, locations, delta):
                  if not locations[p]:
                       del locations[p]
 
+def _calculate_chunk_stats(chunk_data):
+    """
+    Calculates local pair counts and locations for a chunk of words.
+
+    Args:
+        chunk_data (tuple): A tuple containing (start_index, word_list_chunk).
+
+    Returns:
+        tuple: A tuple containing (local_pair_counts, local_locations).
+    """
+    start_index, word_chunk = chunk_data
+    local_counts = Counter()
+    local_locations = defaultdict(set)
+
+    for i, word in enumerate(word_chunk):
+        word_idx = start_index + i # Calculate original index
+        # Simulate the core logic of _update_word_stats for this word
+        for p in zip(word, word[1:]):
+            local_counts[p] += 1
+            local_locations[p].add(word_idx)
+
+    return local_counts, local_locations
+
 
 def tokenizer(input_path, vocab_size, special_tokens):
     """
@@ -62,6 +95,8 @@ def tokenizer(input_path, vocab_size, special_tokens):
         vocab  : dict[int, bytes]              (id -> token bytes)
         merges : list[tuple[bytes, bytes]]     (history, in order)
     """
+    print(f"Training tokenizer on {input_path} with vocab size {vocab_size} and special tokens {special_tokens}")
+    start_time = time.time()
     with open(input_path, "r", encoding="utf-8") as f:
         raw = f.read()
 
@@ -70,22 +105,36 @@ def tokenizer(input_path, vocab_size, special_tokens):
 
     if special_tokens:
         unique_special_tokens_bytes = {st.encode('utf-8') for st in special_tokens}
-        # Use non-capturing split
         split_pattern = "|".join(map(re.escape, special_tokens))
         text_chunks = re.split(split_pattern, raw)
+        # we need the first index of each chunk in the original text (in bytes)
+
     else:
         unique_special_tokens_bytes = set()
-        text_chunks = [raw]
+        text_chunks = [(raw, 0)]
     del raw
 
-    # Apply PAT to all chunks resulting from the split
-    pre_tokens = []
-    for chunk in text_chunks:
-        if not chunk: continue # Skip empty chunks
-        pre_tokens.extend(m.group(0) for m in PAT.finditer(chunk))
+    special_tokens_time = time.time()
+    print(f"Time taken to split special tokens: {special_tokens_time - start_time} seconds")
 
-    words = [list(t.encode("utf-8")) for t in pre_tokens if t]
-    del pre_tokens
+    pair_counts = Counter()
+    locations = defaultdict(set)
+
+    num_processes = multiprocessing.cpu_count()
+    words = []
+    with multiprocessing.Pool(processes=num_processes) as pool:
+        results = pool.map(_process_encode_chunk, text_chunks)
+
+    running_index = 0
+    for sublist, local_counts, local_locations in results:
+        words.extend(sublist)
+
+        pair_counts.update(local_counts)
+        for pair, index_set in local_locations.items():
+            # add running index to all values in set
+            locations[pair].update(index + running_index for index in index_set)
+
+        running_index += len(sublist)
 
     vocab = {i: bytes([i]) for i in range(256)}
     merges = []
@@ -95,12 +144,10 @@ def tokenizer(input_path, vocab_size, special_tokens):
     if num_merges < 0:
         raise ValueError(f"Vocab size {vocab_size} too small for 256 bytes + {len(unique_special_tokens_bytes)} unique special tokens.")
 
-    pair_counts = Counter()
-    locations = defaultdict(set)
-    for i, w in enumerate(words):
-        _update_word_stats(w, i, pair_counts, locations, +1)
+    pre_tokenize_time = time.time()
+    print(f"Time taken to pre-tokenize: {pre_tokenize_time - special_tokens_time} seconds")
 
-    for _ in range(num_merges):
+    for i in range(num_merges):
         if not pair_counts: break
         try:
              valid_pairs = {p: c for p, c in pair_counts.items() if p[0] in vocab and p[1] in vocab}
@@ -130,6 +177,12 @@ def tokenizer(input_path, vocab_size, special_tokens):
             words[idx] = merged_w
         if best_pair in locations: del locations[best_pair]
         if best_pair in pair_counts: del pair_counts[best_pair]
+
+        if i % 100 == 0:
+            print(f"Time taken to merge {i} pairs: {time.time() - start_time} seconds")
+
+    merge_time = time.time()
+    print(f"Time taken to merge: {merge_time - pre_tokenize_time} seconds")
 
     for tok_bytes in unique_special_tokens_bytes:
         vocab[next_id] = tok_bytes
