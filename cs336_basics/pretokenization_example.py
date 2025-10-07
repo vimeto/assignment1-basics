@@ -1,6 +1,7 @@
 import os
 from typing import BinaryIO
-
+import time
+import multiprocessing
 
 def find_chunk_boundaries(
     file: BinaryIO,
@@ -49,14 +50,32 @@ def find_chunk_boundaries(
     return sorted(set(chunk_boundaries))
 
 
-## Usage
-with open(..., "rb") as f:
-    num_processes = 4
-    boundaries = find_chunk_boundaries(f, num_processes, b"<|endoftext|>")
+if __name__ == "__main__":
+    ## Usage
+    num_processes = multiprocessing.cpu_count()
+    filename = "/Users/vilhelmtoivonen/code/yliopisto/cs336/assignment1-basics/tests/fixtures/tinystories_sample.txt"
 
-    # The following is a serial implementation, but you can parallelize this
-    # by sending each start/end pair to a set of processes.
-    for start, end in zip(boundaries[:-1], boundaries[1:]):
-        f.seek(start)
-        chunk = f.read(end - start).decode("utf-8", errors="ignore")
-        # Run pre-tokenization on your chunk and store the counts for each pre-token
+    start_time = time.time()
+    with open(filename, "rb") as f:
+        boundaries = find_chunk_boundaries(
+            f, num_processes, "<|endoftext|>".encode("utf-8"))
+
+        end_time = time.time()
+        print(f"Time taken to find chunk boundaries: {end_time - start_time} seconds")
+
+        # The following is a serial implementation, but you can parallelize this
+        # by sending each start/end pair to a set of processes.
+        for start, end in zip(boundaries[:-1], boundaries[1:]):
+            f.seek(start)
+            chunk_bytes = f.read(end - start)
+            chunk = chunk_bytes.decode("utf-8", errors="ignore")
+            # Run pre-tokenization on your chunk and store the counts for each pre-token
+            first_ten = chunk[:10]
+            last_ten = chunk[-10:]
+            print(f"First ten characters: {first_ten}")
+            print(f"Last ten characters: {last_ten}")
+            print(list(chunk_bytes[:10]))
+            print(list(first_ten.encode("utf-8")))
+
+        end_encoding_time = time.time()
+        print(f"Time taken to encode chunks: {end_encoding_time - end_time} seconds")

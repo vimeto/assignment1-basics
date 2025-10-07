@@ -1,0 +1,62 @@
+
+
+% this is going to be a latex file that contains the answers to the questions in the assignment
+
+\documentclass{article}
+
+\usepackage[shortlabels]{enumitem}
+
+\begin{document}
+
+\section{Empty}
+
+\section{BPE Tokenizer}
+
+\subsection{The unicode standard}
+
+\begin{enumerate}[a)]
+  \item What is chr(0)?
+  \begin{itemize}
+    \item chr(0) is the null character. In low-level programming, it is used to represent the end of a string. In high-level languages, it takes the value of a null character, without any visible glyph.
+  \end{itemize}
+
+  \item How does this character’s string representation (__repr__()) differ from its printed representation?
+  \begin{itemize}
+    \item The __repr__() method returns the string representation of the character, including escape sequences and quotes. The printed representation does not have these, for example they show nothing for chr(0).
+  \end{itemize}
+
+  \item What happens when this character occurs in text?
+  \begin{itemize}
+    \item The character is added just as any other character, but when printed, it displays nothing. This is because it does not have a visible glyph.
+  \end{itemize}
+\end{enumerate}
+
+\subsection{Unicode Encodings}
+
+\begin{enumerate}[a)]
+  \item What are some reasons to prefer training our tokenizer on UTF-8 encoded bytes, rather than
+  UTF-16 or UTF-32?
+  \begin{itemize}
+    \item UTF-8 is more space efficient than UTF-16 and UTF-32. Short normal text uses 1 byte per character, while UTF-16 uses 2 bytes and UTF-32 uses 4 bytes.
+  \end{itemize}
+
+  \item What are some reasons to prefer training our tokenizer on UTF-8 encoded bytes, rather than
+  UTF-16 or UTF-32?
+  \begin{itemize}
+    \item UTF-8 is more space efficient than UTF-16 and UTF-32. It is also more compatible with ASCII, which is the most common encoding for text.
+  \end{itemize}
+
+  \item Consider the following (incorrect) function, which is intended to decode a UTF-8 byte string into
+  a Unicode string. Why is this function incorrect? Provide an example of an input byte string
+  that yields incorrect results.
+  \begin{itemize}
+    \item The function is incorrect because it tries to decode each individual byte as if it were a complete UTF-8 character. UTF-8 is a variable-length encoding: many code points (e.g. accented letters, symbols, and all emoji) are encoded as two, three, or four bytes in sequence. Example: `€`
+  \end{itemize}
+
+  \item Give a two byte sequence that does not decode to any Unicode character(s)
+  \begin{itemize}
+    \item `b'\xe2\xac'`. This is the byte sequence for the Euro symbol without the middle byte.
+  \end{itemize}
+\end{enumerate}
+
+\end{document}
