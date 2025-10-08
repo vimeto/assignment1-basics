@@ -1,191 +1,312 @@
-import re
-import time
-import regex as re
-import math
-from collections import Counter, defaultdict
-import multiprocessing
+from __future__ import annotations
 
-PAT = re.compile(r"\'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+")
+import json
+from dataclasses import dataclass
+from typing import Dict, Iterable, Iterator, List, Tuple
 
-# Helper function for parallel pre-tokenization and encoding
-def _process_encode_chunk(chunk):
-    # Process a single chunk: find matches, encode, and return list of byte lists
-    # PAT should be accessible here (global or passed if needed)
-    if not chunk: return []
-    words = [list(m.group(0).encode("utf-8")) for m in PAT.finditer(chunk)]
-    local_counts, local_locations = _calculate_chunk_stats((0,words))
-    return words, local_counts, local_locations
+import regex
 
-def _merge_word(word, pair, new_id):
-    """Merge a single word in place - no string ops, no copies."""
-    out, i = [], 0
-    a, b = pair
-    L = len(word)
-    while i < L:
-        if i < L - 1 and word[i] == a and word[i + 1] == b:
-            out.append(new_id)
-            i += 2
-        else:
-            out.append(word[i])
-            i += 1
-    return out
 
-# New function to update counts and locations for a single word
-def _update_word_stats(word, word_idx, pair_counts, locations, delta):
+@dataclass(frozen=True)
+class MergeRule:
+    """Simple helper so type checkers know that merges are always byte pairs."""
+
+    left: bytes
+    right: bytes
+
+
+class Tokenizer:
+    """Byte Pair Encoding (BPE) tokenizer that mirrors GPT-2 style tokenization.
+
+    We work entirely in byte space: every token ID maps to a byte sequence, and
+    merges are defined over byte-valued symbols. This matches the format produced
+    by the provided training code and lets us share vocabularies with tiktoken.
     """
-    Updates pair_counts and locations for a given word.
-    delta = +1 for adding counts/locations, -1 for removing counts/locations.
-    """
-    for p in zip(word, word[1:]):
-        # Update counts
-        pair_counts[p] = pair_counts.get(p, 0) + delta # Use .get for safety on decrement
 
-        # Update locations
-        if delta > 0:
-            # Add word_idx to the set for this pair
-            if p not in locations:
-                locations[p] = set()
-            locations[p].add(word_idx)
-        elif delta < 0:
-             # Remove word_idx from the set; clean up if necessary
-            if p in locations:
-                locations[p].discard(word_idx)
-                if not locations[p]: # If set becomes empty, remove pair from locations
-                    del locations[p]
+    # GPT-2's pre-tokenizer pattern. The `regex` module understands `\p{L}` etc.
+    _PRETOKEN_PATTERN = regex.compile(
+        r"'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"
+    )
 
-        if pair_counts[p] <= 0:
-             # Ensure pair is removed if its count is non-positive
-             if p in pair_counts:
-                 del pair_counts[p]
-             # Also ensure it's removed from locations if somehow still there
-             if p in locations:
-                 locations[p].discard(word_idx)
-                 if not locations[p]:
-                      del locations[p]
+    def __init__(
+        self,
+        vocab: Dict[int, bytes],
+        merges: List[Tuple[bytes, bytes]],
+        special_tokens: List[str] | None = None,
+    ) -> None:
+        # Store a copy so accidental external mutation will not affect us.
+        self.id_to_token: Dict[int, bytes] = dict(vocab)
+        self.token_to_id: Dict[bytes, int] = {tok: idx for idx, tok in self.id_to_token.items()}
 
-def _calculate_chunk_stats(chunk_data):
-    """
-    Calculates local pair counts and locations for a chunk of words.
+        # Track the next free ID for any new special tokens.
+        self._next_id = max(self.id_to_token, default=-1) + 1
 
-    Args:
-        chunk_data (tuple): A tuple containing (start_index, word_list_chunk).
+        # Normalise merge definitions and build a fast lookup of their priority.
+        self.merges: List[MergeRule] = [MergeRule(bytes(left), bytes(right)) for left, right in merges]
+        self.bpe_ranks: Dict[Tuple[bytes, bytes], int] = {
+            (rule.left, rule.right): rank for rank, rule in enumerate(self.merges)
+        }
 
-    Returns:
-        tuple: A tuple containing (local_pair_counts, local_locations).
-    """
-    start_index, word_chunk = chunk_data
-    local_counts = Counter()
-    local_locations = defaultdict(set)
+        # BPE is recursive, so caching individual byte sequences speeds things up.
+        self._bpe_cache: Dict[bytes, Tuple[int, ...]] = {}
 
-    for i, word in enumerate(word_chunk):
-        word_idx = start_index + i # Calculate original index
-        # Simulate the core logic of _update_word_stats for this word
-        for p in zip(word, word[1:]):
-            local_counts[p] += 1
-            local_locations[p].add(word_idx)
+        # Optional special tokens stay intact during encoding.
+        self.special_token_to_id: Dict[str, int] = {}
+        if special_tokens:
+            for tok in special_tokens:
+                self._register_special_token(tok)
+        self._sorted_special_tokens: List[str] = sorted(
+            self.special_token_to_id, key=len, reverse=True
+        )
 
-    return local_counts, local_locations
+    # ------------------------------------------------------------------
+    # Construction helpers
+    # ------------------------------------------------------------------
+    def _register_special_token(self, token: str) -> None:
+        """Ensure `token` exists in the vocab and remember its ID for fast lookup."""
 
+        token_str = str(token)
+        token_bytes = token_str.encode("utf-8")
 
-def tokenizer(input_path, vocab_size, special_tokens):
-    """
-    Train a byte-level BPE tokenizer using incremental updates,
-    correctly handling special tokens by excluding them from merges.
-    Returns
-        vocab  : dict[int, bytes]              (id -> token bytes)
-        merges : list[tuple[bytes, bytes]]     (history, in order)
-    """
-    print(f"Training tokenizer on {input_path} with vocab size {vocab_size} and special tokens {special_tokens}")
-    start_time = time.time()
-    with open(input_path, "r", encoding="utf-8") as f:
-        raw = f.read()
+        token_id = self.token_to_id.get(token_bytes)
+        if token_id is None:
+            token_id = self._next_id
+            self._next_id += 1
+            self.id_to_token[token_id] = token_bytes
+            self.token_to_id[token_bytes] = token_id
 
-    if special_tokens is None:
-        special_tokens = []
+        # Record once; duplicates in the input list are ignored.
+        self.special_token_to_id.setdefault(token_str, token_id)
 
-    if special_tokens:
-        unique_special_tokens_bytes = {st.encode('utf-8') for st in special_tokens}
-        split_pattern = "|".join(map(re.escape, special_tokens))
-        text_chunks = re.split(split_pattern, raw)
-        # we need the first index of each chunk in the original text (in bytes)
+    @classmethod
+    def from_files(
+        cls,
+        vocab_filepath: str,
+        merges_filepath: str,
+        special_tokens: List[str] | None = None,
+    ) -> "Tokenizer":
+        """Load vocab/merges produced by ``train_tokenizer.py`` and build a tokenizer."""
 
-    else:
-        unique_special_tokens_bytes = set()
-        text_chunks = [(raw, 0)]
-    del raw
+        with open(vocab_filepath, "r", encoding="utf-8") as vocab_file:
+            vocab_data = json.load(vocab_file)
 
-    special_tokens_time = time.time()
-    print(f"Time taken to split special tokens: {special_tokens_time - start_time} seconds")
+        vocab: Dict[int, bytes] = {}
+        if isinstance(vocab_data, dict):
+            iterator = vocab_data.items()
+        else:  # Allow a plain list for convenience.
+            iterator = enumerate(vocab_data)
 
-    pair_counts = Counter()
-    locations = defaultdict(set)
+        for key, value in iterator:
+            vocab[int(key)] = bytes(value, encoding="utf-8")
 
-    num_processes = multiprocessing.cpu_count()
-    words = []
-    with multiprocessing.Pool(processes=num_processes) as pool:
-        results = pool.map(_process_encode_chunk, text_chunks)
+        vocab_values = set(vocab.values())
 
-    running_index = 0
-    for sublist, local_counts, local_locations in results:
-        words.extend(sublist)
+        merges: List[Tuple[bytes, bytes]] = []
+        with open(merges_filepath, "r", encoding="utf-8") as merges_file:
+            for raw_line in merges_file:
+                if raw_line.startswith("#"):
+                    continue
 
-        pair_counts.update(local_counts)
-        for pair, index_set in local_locations.items():
-            # add running index to all values in set
-            locations[pair].update(index + running_index for index in index_set)
+                # Preserve leading spaces inside tokens; only drop the trailing newline.
+                line = raw_line.rstrip("\n")
+                if not line:
+                    continue
 
-        running_index += len(sublist)
+                parsed = cls._parse_merge_line(line, vocab_values)
+                if parsed is None:
+                    msg = f"Could not parse merge line: {line!r}"
+                    raise ValueError(msg)
+                merges.append(parsed)
 
-    vocab = {i: bytes([i]) for i in range(256)}
-    merges = []
-    next_id = 256
+        return cls(vocab=vocab, merges=merges, special_tokens=special_tokens)
 
-    num_merges = vocab_size - 256 - len(unique_special_tokens_bytes)
-    if num_merges < 0:
-        raise ValueError(f"Vocab size {vocab_size} too small for 256 bytes + {len(unique_special_tokens_bytes)} unique special tokens.")
+    @staticmethod
+    def _parse_merge_line(
+        line: str, vocab_values: set[bytes]
+    ) -> Tuple[bytes, bytes] | None:
+        """Recover the two byte tokens described on ``line``.
 
-    pre_tokenize_time = time.time()
-    print(f"Time taken to pre-tokenize: {pre_tokenize_time - special_tokens_time} seconds")
+        Merges are written as ``token_a`` + space + ``token_b``. Tokens can begin
+        or end with spaces themselves, so we try every possible split point where
+        the surrounding pieces appear in the vocabulary.
+        """
 
-    for i in range(num_merges):
-        if not pair_counts: break
+        space_positions = [idx for idx, char in enumerate(line) if char == " "]
+        for idx in space_positions:
+            left_str = line[:idx]
+            right_str = line[idx + 1 :]
+            if not right_str:
+                continue
+
+            left_bytes = left_str.encode("utf-8")
+            right_bytes = right_str.encode("utf-8")
+
+            if left_bytes in vocab_values and right_bytes in vocab_values:
+                return left_bytes, right_bytes
+
+        return None
+
+    # ------------------------------------------------------------------
+    # Public encoding / decoding API
+    # ------------------------------------------------------------------
+    def encode(self, text: str) -> List[int]:
+        """Encode ``text`` into BPE token IDs."""
+
+        return list(self._encode_generator(text))
+
+    def encode_iterable(self, iterable: Iterable[str]) -> Iterator[int]:
+        """Lazily encode each string from ``iterable`` without buffering the entire file."""
+
+        for chunk in iterable:
+            yield from self._encode_generator(chunk)
+
+    def decode(self, ids: List[int]) -> str:
+        """Convert BPE token IDs back into a UTF-8 string."""
+
+        buffer = bytearray()
+        for idx in ids:
+            token_bytes = self.id_to_token.get(idx)
+            if token_bytes is None:
+                msg = f"Token ID {idx} is not present in the vocabulary"
+                raise ValueError(msg)
+            buffer.extend(token_bytes)
+        return buffer.decode("utf-8", errors="replace")
+
+    # ------------------------------------------------------------------
+    # Internal helpers used by both encode and encode_iterable
+    # ------------------------------------------------------------------
+    def _encode_generator(self, text: str) -> Iterator[int]:
+        """Yield token IDs as soon as we know them.
+
+        ``encode`` simply materialises the list, while ``encode_iterable`` streams
+        the output directly. Keeping the logic in one place makes future tweaks
+        (for example, a different pre-tokenizer) much easier.
+        """
+
+        if not text:
+            return
+
+        if not self._sorted_special_tokens:
+            # Fast path when no special tokens are registered.
+            for match in self._PRETOKEN_PATTERN.finditer(text):
+                piece = match.group(0)
+                if piece:
+                    yield from self._bpe(piece.encode("utf-8"))
+            return
+
+        position = 0
+        length = len(text)
+
+        while position < length:
+            match = self._match_special(text, position)
+            if match is not None:
+                special_str, token_id = match
+                yield token_id
+                position += len(special_str)
+                continue
+
+            next_break = length
+            for special in self._sorted_special_tokens:
+                idx = text.find(special, position)
+                if idx != -1:
+                    next_break = min(next_break, idx)
+            chunk = text[position:next_break]
+
+            if chunk:
+                for match in self._PRETOKEN_PATTERN.finditer(chunk):
+                    piece = match.group(0)
+                    if piece:
+                        yield from self._bpe(piece.encode("utf-8"))
+
+            position = next_break
+
+    def _match_special(self, text: str, position: int) -> Tuple[str, int] | None:
+        """Return the special token string and ID starting at ``position`` (if any)."""
+
+        for special in self._sorted_special_tokens:
+            if text.startswith(special, position):
+                return special, self.special_token_to_id[special]
+        return None
+
+    # ------------------------------------------------------------------
+    # BPE core
+    # ------------------------------------------------------------------
+    def _bpe(self, token_bytes: bytes) -> Tuple[int, ...]:
+        """Return the token IDs produced by applying BPE merges to ``token_bytes``."""
+
+        if token_bytes in self._bpe_cache:
+            return self._bpe_cache[token_bytes]
+
+        # If we already have an explicit vocab entry, return it directly.
+        direct = self.token_to_id.get(token_bytes)
+        if direct is not None:
+            encoded = (direct,)
+            self._bpe_cache[token_bytes] = encoded
+            return encoded
+
+        symbols: List[bytes] = [bytes([byte]) for byte in token_bytes]
+
+        if len(symbols) == 1:
+            single = self.token_to_id.get(symbols[0])
+            if single is None:
+                msg = "Encountered byte not present in base vocabulary"
+                raise ValueError(msg)
+            encoded = (single,)
+            self._bpe_cache[token_bytes] = encoded
+            return encoded
+
+        pairs = self._collect_pairs(symbols)
+
+        while pairs:
+            best_pair = self._best_ranked_pair(pairs)
+            if best_pair is None:
+                break
+
+            first, second = best_pair
+            merged: List[bytes] = []
+            idx = 0
+            while idx < len(symbols):
+                if (
+                    idx < len(symbols) - 1
+                    and symbols[idx] == first
+                    and symbols[idx + 1] == second
+                ):
+                    merged.append(symbols[idx] + symbols[idx + 1])
+                    idx += 2
+                else:
+                    merged.append(symbols[idx])
+                    idx += 1
+
+            symbols = merged
+            if len(symbols) == 1:
+                break
+            pairs = self._collect_pairs(symbols)
+
         try:
-             valid_pairs = {p: c for p, c in pair_counts.items() if p[0] in vocab and p[1] in vocab}
-             if not valid_pairs: break
-             best_pair = max(valid_pairs, key=lambda p: (valid_pairs[p], vocab[p[0]], vocab[p[1]]))
-        except KeyError as e:
-             print(f"Warning: KeyError finding best pair {e}. This might indicate an issue.")
-             break
-        if best_pair not in pair_counts or pair_counts[best_pair] <= 0:
-             if best_pair in pair_counts: del pair_counts[best_pair]
-             if best_pair in locations: del locations[best_pair]
-             continue
-        new_id = next_id
-        vocab[new_id] = vocab[best_pair[0]] + vocab[best_pair[1]]
-        merges.append((vocab[best_pair[0]], vocab[best_pair[1]]))
-        next_id += 1
-        affected_indices = list(locations[best_pair])
-        new_words_map = {}
-        for idx in affected_indices:
-            w = new_words_map.get(idx, words[idx])
-            if not w: continue
-            _update_word_stats(w, idx, pair_counts, locations, -1)
-            merged_w = _merge_word(w, best_pair, new_id)
-            new_words_map[idx] = merged_w
-            _update_word_stats(merged_w, idx, pair_counts, locations, +1)
-        for idx, merged_w in new_words_map.items():
-            words[idx] = merged_w
-        if best_pair in locations: del locations[best_pair]
-        if best_pair in pair_counts: del pair_counts[best_pair]
+            encoded = tuple(self.token_to_id[sym] for sym in symbols)
+        except KeyError as err:
+            msg = "Encountered symbol not present in vocabulary after merges"
+            raise ValueError(msg) from err
 
-        if i % 100 == 0:
-            print(f"Time taken to merge {i} pairs: {time.time() - start_time} seconds")
+        self._bpe_cache[token_bytes] = encoded
+        return encoded
 
-    merge_time = time.time()
-    print(f"Time taken to merge: {merge_time - pre_tokenize_time} seconds")
+    def _best_ranked_pair(self, pairs: List[Tuple[bytes, bytes]]) -> Tuple[bytes, bytes] | None:
+        """Pick the pair with the smallest merge rank (lower rank wins)."""
 
-    for tok_bytes in unique_special_tokens_bytes:
-        vocab[next_id] = tok_bytes
-        next_id += 1
+        best_pair = None
+        best_rank = None
+        for pair in pairs:
+            rank = self.bpe_ranks.get(pair)
+            if rank is None:
+                continue
+            if best_rank is None or rank < best_rank:
+                best_pair = pair
+                best_rank = rank
+        return best_pair
 
-    return vocab, merges
+    @staticmethod
+    def _collect_pairs(symbols: List[bytes]) -> List[Tuple[bytes, bytes]]:
+        """Collect adjacent symbol pairs in their original order."""
+
+        return [(symbols[i], symbols[i + 1]) for i in range(len(symbols) - 1)]

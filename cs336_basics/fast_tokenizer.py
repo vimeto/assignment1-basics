@@ -4,7 +4,7 @@ import regex as re
 from typing import BinaryIO, Tuple, List, Counter, Dict
 from collections import Counter, defaultdict
 import multiprocessing
-from pretokenization_example import find_chunk_boundaries
+from .pretokenization_example import find_chunk_boundaries
 
 import os, mmap, time, heapq, itertools, multiprocessing as mp
 from collections import Counter, defaultdict
