@@ -317,8 +317,26 @@ def run_transformer_block(
         Float[Tensor, "batch sequence_length d_model"] Tensor with the output of
         running the Transformer block on the input features while using RoPE.
     """
-    raise NotImplementedError
 
+    from cs336_basics.modules.transformer_block import TransformerBlock
+    from cs336_basics.modules.rope import RoPE
+
+    rope = RoPE(theta, d_model // num_heads, max_seq_len)
+    block = TransformerBlock(d_model, num_heads, d_ff, rope=rope)
+
+    block.ln1.gi.data = weights["ln1.weight"]
+    block.ln2.gi.data = weights["ln2.weight"]
+
+    block.ffn.w1.linear.data = weights["ffn.w1.weight"]
+    block.ffn.w2.linear.data = weights["ffn.w2.weight"]
+    block.ffn.w3.linear.data = weights["ffn.w3.weight"]
+
+    w = torch.cat([weights["attn.q_proj.weight"], weights["attn.k_proj.weight"], weights["attn.v_proj.weight"]], dim=0)
+
+    block.attn.W_qkv.data = w
+    block.attn.W_o.data = weights["attn.output_proj.weight"]
+
+    return block(in_features)
 
 def run_transformer_lm(
     vocab_size: int,
@@ -399,7 +417,28 @@ def run_transformer_lm(
         Float[Tensor, "batch_size sequence_length vocab_size"]: Tensor with the predicted unnormalized
         next-word distribution for each token.
     """
-    raise NotImplementedError
+    from cs336_basics.modules.transformer_lm import TransformerLM
+
+    lm = TransformerLM(vocab_size, context_length, d_model, num_layers, num_heads, d_ff, rope_theta)
+
+    lm.embedding.embedding_table.data = weights["token_embeddings.weight"]
+    lm.norm.gi.data = weights["ln_final.weight"]
+    lm.ffn.linear.data = weights["lm_head.weight"]
+
+    for l in range(num_layers):
+        lm.layers[l].ln1.gi.data = weights[f"layers.{l}.ln1.weight"]
+        lm.layers[l].ln2.gi.data = weights[f"layers.{l}.ln2.weight"]
+
+        lm.layers[l].ffn.w1.linear.data = weights[f"layers.{l}.ffn.w1.weight"]
+        lm.layers[l].ffn.w2.linear.data = weights[f"layers.{l}.ffn.w2.weight"]
+        lm.layers[l].ffn.w3.linear.data = weights[f"layers.{l}.ffn.w3.weight"]
+
+        w = torch.cat([weights[f"layers.{l}.attn.q_proj.weight"], weights[f"layers.{l}.attn.k_proj.weight"], weights[f"layers.{l}.attn.v_proj.weight"]], dim=0)
+
+        lm.layers[l].attn.W_qkv.data = w
+        lm.layers[l].attn.W_o.data = weights[f"layers.{l}.attn.output_proj.weight"]
+
+    return lm(in_indices)
 
 
 def run_rmsnorm(
