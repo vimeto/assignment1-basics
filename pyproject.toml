@@ -36,7 +36,10 @@ python-preference = "managed"
 [tool.pytest.ini_options]
 log_cli = true
 log_cli_level = "WARNING"
-addopts = "-s"
+addopts = "-s -m 'not slow'"
+markers = [
+    "slow: marks tests that are slow to run",
+]
 
 [tool.ruff]
 line-length = 120

@@ -87,7 +87,7 @@ class Tokenizer:
     ) -> "Tokenizer":
         """Load vocab/merges produced by ``train_tokenizer.py`` and build a tokenizer."""
 
-        with open(vocab_filepath, "r", encoding="utf-8") as vocab_file:
+        with open(vocab_filepath, "r", encoding="latin-1") as vocab_file:
             vocab_data = json.load(vocab_file)
 
         vocab: Dict[int, bytes] = {}
@@ -97,19 +97,23 @@ class Tokenizer:
             iterator = enumerate(vocab_data)
 
         for key, value in iterator:
-            vocab[int(key)] = bytes(value, encoding="utf-8")
+            idx = int(key)
+            if idx < 256:
+                vocab[idx] = bytes([idx])
+            else:
+                vocab[idx] = value.encode("utf-8")
 
         vocab_values = set(vocab.values())
 
         merges: List[Tuple[bytes, bytes]] = []
-        with open(merges_filepath, "r", encoding="utf-8") as merges_file:
+        with open(merges_filepath, "r", encoding="latin-1") as merges_file:
             for raw_line in merges_file:
                 if raw_line.startswith("#"):
                     continue
 
                 # Preserve leading spaces inside tokens; only drop the trailing newline.
                 line = raw_line.rstrip("\n")
-                if not line:
+                if not line or line.isspace():
                     continue
 
                 parsed = cls._parse_merge_line(line, vocab_values)
@@ -138,8 +142,12 @@ class Tokenizer:
             if not right_str:
                 continue
 
-            left_bytes = left_str.encode("utf-8")
-            right_bytes = right_str.encode("utf-8")
+            try:
+                left_bytes = left_str.encode("utf-8")
+                right_bytes = right_str.encode("utf-8")
+            except UnicodeEncodeError:
+                left_bytes = left_str.encode("latin-1")
+                right_bytes = right_str.encode("latin-1")
 
             if left_bytes in vocab_values and right_bytes in vocab_values:
                 return left_bytes, right_bytes
