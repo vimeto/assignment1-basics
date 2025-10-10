@@ -3,6 +3,9 @@ import torch.nn as nn
 from .linear import Linear
 from einops import reduce
 
+def silu(x: torch.Tensor) -> torch.Tensor:
+    return
+
 class SwiGLU(nn.Module):
     def __init__(self, d_model: int, d_ff: int, device=None, dtype=None):
         super().__init__()
