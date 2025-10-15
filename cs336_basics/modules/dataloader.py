@@ -39,8 +39,8 @@ def dataloader(
     x_indices = starts[:, None] + offsets
     y_indices = x_indices + 1
 
-    x_np = dataset[x_indices]
-    y_np = dataset[y_indices]
+    x_np = dataset[x_indices].astype(np.int64)
+    y_np = dataset[y_indices].astype(np.int64)
 
     X = torch.from_numpy(np.ascontiguousarray(x_np)).to(device)
     Y = torch.from_numpy(np.ascontiguousarray(y_np)).to(device)

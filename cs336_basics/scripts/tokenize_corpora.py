@@ -53,7 +53,7 @@ def default_corpora() -> tuple[CorpusSpec, ...]:
 
     data_dir, tokenizer_dir = _project_paths()
 
-    tokenizer_name = "owt_tokenizer_32k_2"
+    tokenizer_name = "owt_tokenizer_32k"
     return (
         CorpusSpec(
             name="tinystories-train",

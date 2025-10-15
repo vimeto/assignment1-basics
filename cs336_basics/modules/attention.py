@@ -52,7 +52,7 @@ class MultiHeadAttention(nn.Module):
         # nn.init.trunc_normal_(w_v, mean=0.0, std=var_dk, a=-3*std_dk, b=3*std_dk)
         # self.W_v = nn.Parameter(w_v)
 
-        var_o = torch.tensor(1 / d_model)
+        var_o = torch.tensor(1 / d_model).to(device)
         std_o = torch.sqrt(var_o)
         w_o = torch.empty(d_model, d_model, device=self.device)
         nn.init.trunc_normal_(w_o, mean=0.0, std=var_o, a=-3*std_o, b=3*std_o)
