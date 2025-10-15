@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=cs336_train
 #SBATCH --account=project_2013932
-#SBATCH --partition=gpu
+#SBATCH --partition=gpusmall
 #SBATCH --time=02:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
