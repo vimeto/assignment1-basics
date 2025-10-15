@@ -1,9 +1,9 @@
 {
   "model": {
-    "vocab_size": 32000,
+    "vocab_size": 10000,
     "context_length": 256,
     "d_model": 512,
-    "num_layers": 2,
+    "num_layers": 10,
     "num_heads": 16,
     "d_ff": 1344,
     "rope_theta": 10000.0
@@ -16,13 +16,13 @@
     "weight_decay": 0.01
   },
   "training": {
-    "total_steps": 2,
+    "total_steps": 20,
     "batch_size": 32,
     "seed": 42,
-    "device": "mps",
+    "device": "cuda",
     "precision": "float32",
     "grad_clip_norm": 1.0,
-    "eval_interval": 4,
+    "eval_interval": 5,
     "eval_batches": 2
   },
   "data": {
