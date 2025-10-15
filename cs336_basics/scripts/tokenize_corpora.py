@@ -73,6 +73,12 @@ def default_corpora() -> tuple[CorpusSpec, ...]:
             tokenizer_dir=tokenizer_dir / tokenizer_name,
             output_path=data_dir / "owt_train.npy",
         ),
+        CorpusSpec(
+            name="owt-valid",
+            text_path=data_dir / "owt_valid.txt",
+            tokenizer_dir=tokenizer_dir / tokenizer_name,
+            output_path=data_dir / "owt_valid.npy",
+        ),
     )
 
 
@@ -102,7 +108,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--dtype",
         default="uint16",
-        help="NumPy dtype for the output arrays (default: int32)",
+        help="NumPy dtype for the output arrays (default: uint16)",
     )
     return parser.parse_args()
 

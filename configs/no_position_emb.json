@@ -1,0 +1,53 @@
+{
+  "model": {
+    "vocab_size": 10000,
+    "context_length": 256,
+    "d_model": 512,
+    "num_layers": 4,
+    "num_heads": 16,
+    "d_ff": 1344,
+    "rope_theta": 10000.0,
+    "use_rope": false
+  },
+  "optimizer": {
+    "name": "adamw",
+    "lr": 0.001,
+    "betas": [0.9, 0.999],
+    "eps": 1e-8,
+    "weight_decay": 0.01
+  },
+  "training": {
+    "total_steps": 5000,
+    "batch_size": 64,
+    "seed": 42,
+    "device": "cuda",
+    "precision": "float32",
+    "grad_clip_norm": 1.0,
+    "eval_interval": 100,
+    "eval_batches": 10
+  },
+  "data": {
+    "train_path": "/scratch/project_2013932/vtoivone/data/TinyStoriesV2-GPT4-train.npy",
+    "val_path": "/scratch/project_2013932/vtoivone/data/TinyStoriesV2-GPT4-valid.npy",
+    "dtype": "uint16"
+  },
+  "checkpoint": {
+    "checkpoint_dir": "/scratch/project_2013932/vtoivone/checkpoints/no_pos_emb",
+    "save_interval": 500,
+    "max_to_keep": 3
+  },
+  "logging": {
+    "log_interval": 50,
+    "use_wandb": true,
+    "project": "cs336-tinystories",
+    "entity": "vilhelm-toivonen-helsinki-university",
+    "run_name": "no_position_emb_nope"
+  },
+  "lr_schedule": {
+    "enabled": true,
+    "alpha_max": 0.001,
+    "alpha_min": 0.0001,
+    "warmup_steps": 500,
+    "cosine_steps": 5000
+  }
+}
