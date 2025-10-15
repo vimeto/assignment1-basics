@@ -29,7 +29,7 @@ def _project_dirs() -> tuple[Path, Path]:
 
 def _default_corpora() -> tuple[CorpusPaths, ...]:
     data_dir, tokenizer_dir = _project_dirs()
-    tokenizer_root = tokenizer_dir / "owt_tokenizer_32k_2"
+    tokenizer_root = tokenizer_dir / "owt_tokenizer_32k"
     return (
         CorpusPaths(
             name="tinystories-train",
