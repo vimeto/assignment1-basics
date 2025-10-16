@@ -41,11 +41,11 @@ class ModelConfig:
 @dataclass(frozen=True)
 class OptimizerConfig:
     name: str = "adamw"
-    dtype: str = "float32"
     lr: float = 3e-4
     betas: Tuple[float, float] = (0.9, 0.999)
     eps: float = 1e-8
     weight_decay: float = 0.1
+    dtype: str | None = None
 
 
 @dataclass(frozen=True)
@@ -286,13 +286,15 @@ def build_optimizer(cfg: ExperimentConfig, parameters: Iterable[torch.nn.Paramet
     opt_cfg = cfg.optimizer
     name = opt_cfg.name.lower()
     if name == "adamw":
+        # Convert dtype string to torch.dtype
+        optimizer_dtype = TORCH_PRECISIONS.get(opt_cfg.dtype.lower()) if opt_cfg.dtype else None
         return AdamW(
             parameters,
             lr=opt_cfg.lr,
             betas=opt_cfg.betas,
             eps=opt_cfg.eps,
             weight_decay=opt_cfg.weight_decay,
-            dtype=opt_cfg.dtype,
+            dtype=optimizer_dtype,
         )
     if name == "sgd":
         return SGD(parameters, lr=opt_cfg.lr)
