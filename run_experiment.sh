@@ -34,7 +34,11 @@ uv --version
 
 # Get the directory where this script is located
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+echo "Script directory: $SCRIPT_DIR"
+
+# Change to script directory
 cd "$SCRIPT_DIR"
+echo "Working directory: $(pwd)"
 
 # Set default values if not provided
 CONFIG_FILE=${CONFIG_FILE:-"configs/001.json"}
@@ -43,6 +47,9 @@ ENV_FILE=${ENV_FILE:-".env"}
 # Check if config file exists
 if [ ! -f "$CONFIG_FILE" ]; then
     echo "Error: Config file $CONFIG_FILE not found!"
+    echo "Looking in: $(pwd)"
+    echo "Directory contents:"
+    ls -la
     exit 1
 fi
 
