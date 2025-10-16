@@ -16,14 +16,14 @@
     "weight_decay": 0.01
   },
   "training": {
-    "total_steps": 2500,
-    "batch_size": 768,
+    "total_steps": 5000,
+    "batch_size": 512,
     "seed": 42,
     "device": "cuda",
     "precision": "bfloat16",
     "grad_clip_norm": 1.0,
     "step_interval": 4,
-    "eval_interval": 100,
+    "eval_interval": 250,
     "eval_batches": 10
   },
   "data": {
