@@ -20,8 +20,9 @@
     "batch_size": 768,
     "seed": 42,
     "device": "cuda",
-    "precision": "float32",
+    "precision": "bfloat16",
     "grad_clip_norm": 1.0,
+    "step_interval": 4,
     "eval_interval": 100,
     "eval_batches": 10
   },

@@ -36,12 +36,12 @@ class SGD(torch.optim.Optimizer):
         return loss
 
 class AdamW(torch.optim.Optimizer):
-    def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8, weight_decay=0.1):
+    def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8, weight_decay=0.1, dtype=None):
         if lr < 0:
             raise ValueError(f"Invalid learning rate: {lr}")
 
         params = list(params)
-        defaults = {"lr": lr, "betas": betas, "eps": eps, "weight_decay": weight_decay}
+        defaults = {"lr": lr, "betas": betas, "eps": eps, "weight_decay": weight_decay, "dtype": dtype}
         super().__init__(params, defaults)
 
     def step(self, closure: Optional[Callable] = None):
@@ -51,13 +51,14 @@ class AdamW(torch.optim.Optimizer):
             b1, b2 = group["betas"]
             eps = group["eps"]
             weight_decay = group["weight_decay"]
+            dtype = group["dtype"]
             for i, p in enumerate(group["params"]):
                 if p.grad is None:
                     continue
                 state = self.state[p] # Get state associated with p.
                 t = state.get("t", 1) # Get iteration number from the state, or initial value.
-                m = state.get("m", torch.zeros_like(p))
-                v = state.get("v", torch.zeros_like(p))
+                m = state.get("m", torch.zeros_like(p, dtype=dtype))
+                v = state.get("v", torch.zeros_like(p, dtype=dtype))
                 grad = p.grad.data # Get the gradient of loss with respect to p.
 
                 m = b1 * m + (1 - b1) * grad

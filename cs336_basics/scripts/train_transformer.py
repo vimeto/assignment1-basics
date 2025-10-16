@@ -41,6 +41,7 @@ class ModelConfig:
 @dataclass(frozen=True)
 class OptimizerConfig:
     name: str = "adamw"
+    dtype: str = "float32"
     lr: float = 3e-4
     betas: Tuple[float, float] = (0.9, 0.999)
     eps: float = 1e-8
@@ -55,6 +56,7 @@ class TrainingConfig:
     device: str | None = None
     precision: str = "float32"
     grad_clip_norm: float | None = None
+    step_interval: int = 1
     eval_interval: int = 200
     eval_batches: int = 16
 
@@ -290,6 +292,7 @@ def build_optimizer(cfg: ExperimentConfig, parameters: Iterable[torch.nn.Paramet
             betas=opt_cfg.betas,
             eps=opt_cfg.eps,
             weight_decay=opt_cfg.weight_decay,
+            dtype=opt_cfg.dtype,
         )
     if name == "sgd":
         return SGD(parameters, lr=opt_cfg.lr)
@@ -471,7 +474,8 @@ def train(cfg: ExperimentConfig) -> None:
         if cfg.training.grad_clip_norm is not None:
             gradient_clipping(model_params, cfg.training.grad_clip_norm)
 
-        optimizer.step()
+        if not cfg.training.step_interval or (step + 1) % cfg.training.step_interval == 0:
+            optimizer.step()
 
         if (step + 1) % cfg.logging.log_interval == 0 or step == start_step:
             metrics = {"train_loss": float(loss.item()), "lr": float(lr)}
