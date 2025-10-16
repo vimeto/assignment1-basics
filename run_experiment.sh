@@ -32,12 +32,16 @@ fi
 # Verify uv is available
 uv --version
 
-# Get the directory where this script is located
-SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-echo "Script directory: $SCRIPT_DIR"
+# Use the PROJECT_DIR passed from submit script, or try to detect it
+if [ -z "$PROJECT_DIR" ]; then
+    echo "Warning: PROJECT_DIR not set, attempting to detect..."
+    PROJECT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+fi
 
-# Change to script directory
-cd "$SCRIPT_DIR"
+echo "Project directory: $PROJECT_DIR"
+
+# Change to project directory
+cd "$PROJECT_DIR"
 echo "Working directory: $(pwd)"
 
 # Set default values if not provided

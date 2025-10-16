@@ -31,9 +31,13 @@ fi
 echo "Submitting job with config: $CONFIG_FILE"
 echo "Environment file: $ENV_FILE"
 
+# Get the absolute path to the project directory
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # Export variables for the SLURM script
 export CONFIG_FILE
 export ENV_FILE
+export PROJECT_DIR
 
 # Submit the job
 sbatch --export=ALL run_experiment.sh
