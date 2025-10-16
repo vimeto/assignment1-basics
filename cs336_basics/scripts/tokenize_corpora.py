@@ -53,30 +53,31 @@ def default_corpora() -> tuple[CorpusSpec, ...]:
 
     data_dir, tokenizer_dir = _project_paths()
 
-    tokenizer_name = "owt_tokenizer_32k"
+    tokenizer_owt_name = "owt_tokenizer_32k"
+    tokenizer_ts_name = "ts_10k"
     return (
         CorpusSpec(
             name="tinystories-train",
             text_path=data_dir / "TinyStoriesV2-GPT4-train.txt",
-            tokenizer_dir=tokenizer_dir / tokenizer_name,
+            tokenizer_dir=tokenizer_dir / tokenizer_ts_name,
             output_path=data_dir / "TinyStoriesV2-GPT4-train.npy",
         ),
         CorpusSpec(
             name="tinystories-valid",
             text_path=data_dir / "TinyStoriesV2-GPT4-valid.txt",
-            tokenizer_dir=tokenizer_dir / tokenizer_name,
+            tokenizer_dir=tokenizer_dir / tokenizer_ts_name,
             output_path=data_dir / "TinyStoriesV2-GPT4-valid.npy",
         ),
         CorpusSpec(
             name="owt-train",
             text_path=data_dir / "owt_train.txt",
-            tokenizer_dir=tokenizer_dir / tokenizer_name,
+            tokenizer_dir=tokenizer_dir / tokenizer_owt_name,
             output_path=data_dir / "owt_train.npy",
         ),
         CorpusSpec(
             name="owt-valid",
             text_path=data_dir / "owt_valid.txt",
-            tokenizer_dir=tokenizer_dir / tokenizer_name,
+            tokenizer_dir=tokenizer_dir / tokenizer_owt_name,
             output_path=data_dir / "owt_valid.npy",
         ),
     )
