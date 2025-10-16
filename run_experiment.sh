@@ -36,10 +36,6 @@ uv --version
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 cd "$SCRIPT_DIR"
 
-# Create logs directory if it doesn't exist
-mkdir -p logs
-mkdir -p /scratch/project_2013932/vtoivone/checkpoints
-
 # Set default values if not provided
 CONFIG_FILE=${CONFIG_FILE:-"configs/001.json"}
 ENV_FILE=${ENV_FILE:-".env"}
