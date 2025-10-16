@@ -17,7 +17,7 @@
   },
   "training": {
     "total_steps": 5000,
-    "batch_size": 2048,
+    "batch_size": 512,
     "seed": 42,
     "device": "cuda",
     "precision": "float32",
