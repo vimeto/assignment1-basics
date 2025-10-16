@@ -46,6 +46,7 @@ echo "Working directory: $(pwd)"
 
 # Set default values if not provided
 CONFIG_FILE=${CONFIG_FILE:-"configs/001.json"}
+CONFIG_NAME=${CONFIG_NAME:-"001"}
 ENV_FILE=${ENV_FILE:-".env"}
 
 # Check if config file exists
@@ -58,6 +59,7 @@ if [ ! -f "$CONFIG_FILE" ]; then
 fi
 
 echo "Using config: $CONFIG_FILE"
+echo "Config name: $CONFIG_NAME"
 
 # Load environment variables from .env file if it exists
 if [ -f "$ENV_FILE" ]; then
@@ -71,6 +73,7 @@ fi
 echo "Starting training..."
 uv run python cs336_basics/scripts/train_transformer.py \
     --config "$CONFIG_FILE" \
+    --wandb-run-name "$CONFIG_NAME" \
     2>&1 | tee "logs/training_${SLURM_JOB_ID}.log"
 
 EXIT_CODE=${PIPESTATUS[0]}

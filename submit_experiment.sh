@@ -36,11 +36,12 @@ PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Export variables for the SLURM script
 export CONFIG_FILE
+export CONFIG_NAME
 export ENV_FILE
 export PROJECT_DIR
 
-# Submit the job
-sbatch --export=ALL run_experiment.sh
+# Submit the job with dynamic job name
+sbatch --export=ALL --job-name="${CONFIG_NAME}" run_experiment.sh
 
 echo "Job submitted!"
 echo "Monitor with: squeue -u \$USER"
