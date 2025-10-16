@@ -10,7 +10,7 @@
   },
   "optimizer": {
     "name": "adamw",
-    "lr": 0.003,
+    "lr": 0.01,
     "betas": [0.9, 0.999],
     "eps": 1e-8,
     "weight_decay": 0.01,
@@ -46,9 +46,9 @@
   },
   "lr_schedule": {
     "enabled": true,
-    "alpha_max": 0.003,
-    "alpha_min": 0.0003,
+    "alpha_max": 0.01,
+    "alpha_min": 0.001,
     "warmup_steps": 500,
-    "cosine_steps": 5000
+    "cosine_steps": 3500
   }
 }
