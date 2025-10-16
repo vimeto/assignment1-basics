@@ -25,7 +25,7 @@ class TransformerBlock(nn.Module):
 
         seq_len = x.shape[-2]
 
-        token_positions = torch.arange(seq_len, device=self.device)
+        token_positions = torch.arange(seq_len, device=x.device)
         y = x + self.attn(self.ln1(x), token_positions)
 
         y = y + self.ffn(self.ln2(y))

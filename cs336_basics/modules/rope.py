@@ -28,6 +28,10 @@ class RoPE(nn.Module):
         # token pos are shape (..., seq_len)
         # input x is shape (..., seq_len, d_k)
 
+        # Validate token positions are within bounds
+        assert token_positions.max() < self.max_seq_len, \
+            f"token position {token_positions.max()} exceeds max_seq_len {self.max_seq_len}"
+
         # shape (batch, seq_len, d_k // 2)
         chosen_sin = self.sin[token_positions]
         chosen_cos = self.cos[token_positions]
