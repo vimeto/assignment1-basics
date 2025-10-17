@@ -1,17 +1,18 @@
 #!/bin/bash
 #SBATCH --job-name=eval_debug
 #SBATCH --account=project_2013932
-#SBATCH --time=01:00:00
 #SBATCH --partition=gpusmall
-#SBATCH --gres=gpu:a100:1
+#SBATCH --time=00:30:00
+#SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=4
-#SBATCH --mem=64G
+#SBATCH --cpus-per-task=10
+#SBATCH --mem=16G
+#SBATCH --gres=gpu:a100:1
 #SBATCH --output=logs/eval_%j.out
 #SBATCH --error=logs/eval_%j.err
 
-# Usage: sbatch slurm_eval.sh <checkpoint_path> <config_json>
-# Example: sbatch slurm_eval.sh /scratch/project_2013932/vtoivone/checkpoints/learning_rate_medium/step_00004500.pt configs/eval_learning_rate_medium.json
+# Usage: sbatch slurm_eval.sh <eval_config.json>
+# Example: sbatch slurm_eval.sh configs/eval_learning_rate_medium.json
 
 set -e  # Exit on error
 
@@ -41,20 +42,38 @@ mkdir -p logs
 
 # Load modules
 module purge
-module load pytorch/2.4
+module load pytorch
 
-# Activate virtual environment
-source .venv/bin/activate
+# Check if uv is installed, if not install it
+if ! command -v uv &> /dev/null; then
+    echo "uv not found, installing..."
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    export PATH="$HOME/.cargo/bin:$PATH"
+fi
+
+# Verify uv is available
+uv --version
+
+# Use the PROJECT_DIR passed from submit script, or try to detect it
+if [ -z "$PROJECT_DIR" ]; then
+    echo "Warning: PROJECT_DIR not set, attempting to detect..."
+    PROJECT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+fi
+
+echo "Project directory: $PROJECT_DIR"
+
+# Change to project directory
+cd "$PROJECT_DIR"
+echo "Working directory: $(pwd)"
 
 # Print Python environment info
 echo "========================================"
 echo "Environment Info"
 echo "========================================"
-echo "Python: $(which python)"
-echo "Python version: $(python --version)"
-echo "PyTorch version: $(python -c 'import torch; print(torch.__version__)')"
-echo "CUDA available: $(python -c 'import torch; print(torch.cuda.is_available())')"
-echo "CUDA version: $(python -c 'import torch; print(torch.version.cuda if torch.cuda.is_available() else "N/A")')"
+echo "Python: $(uv run python --version 2>&1)"
+echo "PyTorch version: $(uv run python -c 'import torch; print(torch.__version__)' 2>&1)"
+echo "CUDA available: $(uv run python -c 'import torch; print(torch.cuda.is_available())' 2>&1)"
+echo "CUDA version: $(uv run python -c 'import torch; print(torch.version.cuda if torch.cuda.is_available() else "N/A")' 2>&1)"
 echo ""
 
 # Enable CUDA debugging for exact error location
@@ -73,19 +92,19 @@ echo "========================================"
 echo "Parsing Configuration"
 echo "========================================"
 
-VOCAB_SIZE=$(python -c "import json; print(json.load(open('$CONFIG_JSON'))['model']['vocab_size'])")
-CONTEXT_LENGTH=$(python -c "import json; print(json.load(open('$CONFIG_JSON'))['model']['context_length'])")
-D_MODEL=$(python -c "import json; print(json.load(open('$CONFIG_JSON'))['model']['d_model'])")
-NUM_LAYERS=$(python -c "import json; print(json.load(open('$CONFIG_JSON'))['model']['num_layers'])")
-NUM_HEADS=$(python -c "import json; print(json.load(open('$CONFIG_JSON'))['model']['num_heads'])")
-D_FF=$(python -c "import json; print(json.load(open('$CONFIG_JSON'))['model']['d_ff'])")
-ROPE_THETA=$(python -c "import json; print(json.load(open('$CONFIG_JSON'))['model']['rope_theta'])")
+VOCAB_SIZE=$(uv run python -c "import json; print(json.load(open('$CONFIG_JSON'))['model']['vocab_size'])")
+CONTEXT_LENGTH=$(uv run python -c "import json; print(json.load(open('$CONFIG_JSON'))['model']['context_length'])")
+D_MODEL=$(uv run python -c "import json; print(json.load(open('$CONFIG_JSON'))['model']['d_model'])")
+NUM_LAYERS=$(uv run python -c "import json; print(json.load(open('$CONFIG_JSON'))['model']['num_layers'])")
+NUM_HEADS=$(uv run python -c "import json; print(json.load(open('$CONFIG_JSON'))['model']['num_heads'])")
+D_FF=$(uv run python -c "import json; print(json.load(open('$CONFIG_JSON'))['model']['d_ff'])")
+ROPE_THETA=$(uv run python -c "import json; print(json.load(open('$CONFIG_JSON'))['model']['rope_theta'])")
 
-CHECKPOINT_PATH=$(python -c "import json; print(json.load(open('$CONFIG_JSON'))['checkpoint']['path'])")
-VAL_PATH=$(python -c "import json; print(json.load(open('$CONFIG_JSON'))['data']['val_path'])")
-BATCH_SIZE=$(python -c "import json; print(json.load(open('$CONFIG_JSON'))['training']['batch_size'])")
-EVAL_BATCHES=$(python -c "import json; print(json.load(open('$CONFIG_JSON'))['training']['eval_batches'])")
-PRECISION=$(python -c "import json; print(json.load(open('$CONFIG_JSON'))['training']['precision'])")
+CHECKPOINT_PATH=$(uv run python -c "import json; print(json.load(open('$CONFIG_JSON'))['checkpoint']['path'])")
+VAL_PATH=$(uv run python -c "import json; print(json.load(open('$CONFIG_JSON'))['data']['val_path'])")
+BATCH_SIZE=$(uv run python -c "import json; print(json.load(open('$CONFIG_JSON'))['training']['batch_size'])")
+EVAL_BATCHES=$(uv run python -c "import json; print(json.load(open('$CONFIG_JSON'))['training']['eval_batches'])")
+PRECISION=$(uv run python -c "import json; print(json.load(open('$CONFIG_JSON'))['training']['precision'])")
 
 echo "Model config:"
 echo "  vocab_size: $VOCAB_SIZE"
@@ -124,7 +143,7 @@ fi
 echo "========================================"
 echo "Running Evaluation"
 echo "========================================"
-echo "Command: python cs336_basics/scripts/eval_only.py \\"
+echo "Command: uv run python cs336_basics/scripts/eval_only.py \\"
 echo "  --checkpoint $CHECKPOINT_PATH \\"
 echo "  --val-path $VAL_PATH \\"
 echo "  --vocab-size $VOCAB_SIZE \\"
@@ -141,7 +160,7 @@ echo "  --device cuda \\"
 echo "  --debug"
 echo ""
 
-python cs336_basics/scripts/eval_only.py \
+uv run python cs336_basics/scripts/eval_only.py \
     --checkpoint "$CHECKPOINT_PATH" \
     --val-path "$VAL_PATH" \
     --vocab-size "$VOCAB_SIZE" \
