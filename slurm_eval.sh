@@ -54,11 +54,8 @@ fi
 # Verify uv is available
 uv --version
 
-# Use the PROJECT_DIR passed from submit script, or try to detect it
-if [ -z "$PROJECT_DIR" ]; then
-    echo "Warning: PROJECT_DIR not set, attempting to detect..."
-    PROJECT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-fi
+# Use SLURM_SUBMIT_DIR (the directory where sbatch was called)
+PROJECT_DIR="${SLURM_SUBMIT_DIR}"
 
 echo "Project directory: $PROJECT_DIR"
 
