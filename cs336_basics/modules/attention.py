@@ -29,7 +29,7 @@ def attention(K: torch.Tensor, Q: torch.Tensor, V: torch.Tensor, mask = None) ->
 
 
 class MultiHeadAttention(nn.Module):
-    def __init__(self, d_model, num_heads, device=None, rope=None):
+    def __init__(self, d_model, num_heads, device=None, rope=None, use_rope=True):
         super().__init__()
 
         self.d_model = d_model
@@ -37,6 +37,7 @@ class MultiHeadAttention(nn.Module):
         self.device = device
         self.d_k = d_model // num_heads
         self.rope = rope
+        self.use_rope = use_rope
 
         var_dk = 2 / (self.d_k + d_model)
         std_dk = np.sqrt(var_dk)
@@ -80,7 +81,7 @@ class MultiHeadAttention(nn.Module):
         k = rearrange(k_flat, "... seq (heads d_k) -> ... heads seq d_k", heads=self.num_heads)
         v = rearrange(v_flat, "... seq (heads d_k) -> ... heads seq d_k", heads=self.num_heads)
 
-        if self.rope is not None and token_positions is not None:
+        if self.use_rope and self.rope is not None and token_positions is not None:
             q = self.rope(q, token_positions)
             k = self.rope(k, token_positions)
 

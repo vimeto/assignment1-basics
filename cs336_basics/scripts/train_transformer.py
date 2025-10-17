@@ -36,6 +36,12 @@ class ModelConfig:
     num_heads: int = 8
     d_ff: int = 2048
     rope_theta: float = 10000.0
+    # Ablation study flags (additive norm support)
+    use_rope: bool = True
+    use_pre_norm: bool = True
+    use_post_norm: bool = False
+    use_rmsnorm: bool = True
+    use_swiglu: bool = True
 
 
 @dataclass(frozen=True)
@@ -275,6 +281,11 @@ def build_model(cfg: ExperimentConfig, device: torch.device, dtype: torch.dtype)
         d_ff=model_cfg.d_ff,
         rope_theta=model_cfg.rope_theta,
         device=device,
+        use_rope=model_cfg.use_rope,
+        use_pre_norm=model_cfg.use_pre_norm,
+        use_post_norm=model_cfg.use_post_norm,
+        use_rmsnorm=model_cfg.use_rmsnorm,
+        use_swiglu=model_cfg.use_swiglu,
     )
     if isinstance(model.layers, list):
         model.layers = torch.nn.ModuleList(model.layers)  # type: ignore[attr-defined]

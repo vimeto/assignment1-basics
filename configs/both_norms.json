@@ -7,7 +7,7 @@
     "num_heads": 16,
     "d_ff": 1344,
     "rope_theta": 10000.0,
-    "use_pre_norm": false,
+    "use_pre_norm": true,
     "use_post_norm": true
   },
   "optimizer": {
@@ -35,7 +35,7 @@
     "dtype": "uint16"
   },
   "checkpoint": {
-    "checkpoint_dir": "/scratch/project_2013932/vtoivone/checkpoints/post_norm",
+    "checkpoint_dir": "/scratch/project_2013932/vtoivone/checkpoints/both_norms",
     "save_interval": 250,
     "max_to_keep": 3
   },
@@ -44,7 +44,7 @@
     "use_wandb": true,
     "project": "cs336-tinystories",
     "entity": "vilhelm-toivonen-helsinki-university",
-    "run_name": "post_norm_ablation"
+    "run_name": "both_norms"
   },
   "lr_schedule": {
     "enabled": true,

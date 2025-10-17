@@ -4,7 +4,7 @@ from .linear import Linear
 from einops import reduce
 
 def silu(x: torch.Tensor) -> torch.Tensor:
-    return
+    return x * torch.sigmoid(x)
 
 class SwiGLU(nn.Module):
     def __init__(self, d_model: int, d_ff: int, device=None, dtype=None):

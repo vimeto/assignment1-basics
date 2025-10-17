@@ -34,8 +34,8 @@
     "dtype": "uint16"
   },
   "checkpoint": {
-    "checkpoint_dir": "/scratch/project_2013932/vtoivone/checkpoints/no_pos_emb",
-    "save_interval": 500,
+    "checkpoint_dir": "/scratch/project_2013932/vtoivone/checkpoints/no_position_emb",
+    "save_interval": 250,
     "max_to_keep": 3
   },
   "logging": {
@@ -43,7 +43,7 @@
     "use_wandb": true,
     "project": "cs336-tinystories",
     "entity": "vilhelm-toivonen-helsinki-university",
-    "run_name": "no_position_emb_nope"
+    "run_name": "no_position_emb"
   },
   "lr_schedule": {
     "enabled": true,

@@ -324,8 +324,8 @@ def run_transformer_block(
     rope = RoPE(theta, d_model // num_heads, max_seq_len)
     block = TransformerBlock(d_model, num_heads, d_ff, rope=rope)
 
-    block.ln1.gi.data = weights["ln1.weight"]
-    block.ln2.gi.data = weights["ln2.weight"]
+    block.pre_attn_norm.gi.data = weights["ln1.weight"]
+    block.pre_ffn_norm.gi.data = weights["ln2.weight"]
 
     block.ffn.w1.linear.data = weights["ffn.w1.weight"]
     block.ffn.w2.linear.data = weights["ffn.w2.weight"]
@@ -426,8 +426,8 @@ def run_transformer_lm(
     lm.ffn.linear.data = weights["lm_head.weight"]
 
     for l in range(num_layers):
-        lm.layers[l].ln1.gi.data = weights[f"layers.{l}.ln1.weight"]
-        lm.layers[l].ln2.gi.data = weights[f"layers.{l}.ln2.weight"]
+        lm.layers[l].pre_attn_norm.gi.data = weights[f"layers.{l}.ln1.weight"]
+        lm.layers[l].pre_ffn_norm.gi.data = weights[f"layers.{l}.ln2.weight"]
 
         lm.layers[l].ffn.w1.linear.data = weights[f"layers.{l}.ffn.w1.weight"]
         lm.layers[l].ffn.w2.linear.data = weights[f"layers.{l}.ffn.w2.weight"]

@@ -35,7 +35,7 @@
   },
   "checkpoint": {
     "checkpoint_dir": "/scratch/project_2013932/vtoivone/checkpoints/no_rmsnorm",
-    "save_interval": 500,
+    "save_interval": 250,
     "max_to_keep": 3
   },
   "logging": {
