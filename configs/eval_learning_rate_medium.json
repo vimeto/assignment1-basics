@@ -10,7 +10,7 @@
   },
   "training": {
     "batch_size": 256,
-    "precision": "bfloat16",
+    "precision": "bf16",
     "eval_batches": 50
   },
   "data": {
