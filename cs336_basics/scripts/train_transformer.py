@@ -263,11 +263,12 @@ def resolve_device(device_override: str | None) -> torch.device:
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-def load_memmap(path: Path, dtype: str) -> np.memmap:
+def load_memmap(path: Path, dtype: str) -> np.ndarray:
     if not path.exists():
         raise FileNotFoundError(f"Dataset file not found: {path}")
-    np_dtype = np.dtype(dtype)
-    return np.memmap(path, mode="r", dtype=np_dtype)
+    # Use np.load with mmap_mode to properly handle .npy file format
+    # np.memmap doesn't understand .npy headers and can read garbage data
+    return np.load(path, mmap_mode='r')
 
 
 def build_model(cfg: ExperimentConfig, device: torch.device, dtype: torch.dtype) -> TransformerLM:
@@ -378,7 +379,7 @@ def maybe_init_wandb(cfg: ExperimentConfig) -> Any:
 
 def evaluate(
     model: TransformerLM,
-    dataset: np.memmap,
+    dataset: np.ndarray,
     cfg: ExperimentConfig,
     device: torch.device,
     rng: np.random.Generator,
