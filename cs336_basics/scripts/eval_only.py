@@ -35,12 +35,14 @@ def resolve_device(device_str: str | None) -> torch.device:
     return torch.device(device_str)
 
 
-def load_memmap_dataset(path: str) -> np.memmap:
+def load_memmap_dataset(path: str) -> np.ndarray:
     """Load a memory-mapped dataset."""
     p = Path(path)
     if not p.exists():
         raise FileNotFoundError(f"Dataset not found: {path}")
-    return np.memmap(path, dtype=np.uint16, mode="r")
+    # Use np.load with mmap_mode to properly handle .npy file format
+    # np.memmap doesn't understand .npy headers and can read garbage data
+    return np.load(path, mmap_mode='r')
 
 
 def evaluate(
