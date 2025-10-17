@@ -64,7 +64,16 @@ class MultiHeadAttention(nn.Module):
         seq_len = x.shape[-2]
         d = x.device
 
+        # Check input for NaN/Inf
+        if torch.isnan(x).any() or torch.isinf(x).any():
+            raise ValueError(f"Attention received NaN or Inf in input x at seq_len={seq_len}")
+
         qkv_flat = einsum(x, self.W_qkv, "... seq d_in, d_out d_in -> ... seq d_out")
+
+        # Check after QKV projection
+        if torch.isnan(qkv_flat).any() or torch.isinf(qkv_flat).any():
+            raise ValueError(f"NaN or Inf after QKV projection at seq_len={seq_len}")
+
         q_flat, k_flat, v_flat = qkv_flat.chunk(3, dim=-1)
 
         q = rearrange(q_flat, "... seq (heads d_k) -> ... heads seq d_k", heads=self.num_heads)
