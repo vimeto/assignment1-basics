@@ -1,8 +1,8 @@
 #!/bin/bash
 #SBATCH --job-name=eval_debug
 #SBATCH --account=project_2013932
-#SBATCH --time=00:30:00
-#SBATCH --partition=gpu
+#SBATCH --time=01:00:00
+#SBATCH --partition=gpusmall
 #SBATCH --gres=gpu:v100:1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
@@ -11,7 +11,7 @@
 #SBATCH --error=logs/eval_%j.err
 
 # Usage: sbatch slurm_eval.sh <checkpoint_path> <config_json>
-# Example: sbatch slurm_eval.sh /scratch/project_2013932/vtoivone/checkpoints/learning_rate_medium/step_00004500.pt configs/baseline.json
+# Example: sbatch slurm_eval.sh /scratch/project_2013932/vtoivone/checkpoints/learning_rate_medium/step_00004500.pt configs/eval_learning_rate_medium.json
 
 set -e  # Exit on error
 
