@@ -17,15 +17,15 @@
     "dtype": "float32"
   },
   "training": {
-    "total_steps": 5000,
+    "total_steps": 10000,
     "batch_size": 256,
     "seed": 42,
     "device": "cuda",
     "precision": "bfloat16",
     "grad_clip_norm": 1.0,
-    "step_interval": 4,
+    "step_interval": 1,
     "eval_interval": 250,
-    "eval_batches": 10
+    "eval_batches": 20
   },
   "data": {
     "train_path": "/scratch/project_2013932/vtoivone/data/TinyStoriesV2-GPT4-train.npy",
@@ -34,7 +34,7 @@
   },
   "checkpoint": {
     "checkpoint_dir": "/scratch/project_2013932/vtoivone/checkpoints/learning_rate_medium",
-    "save_interval": 500,
+    "save_interval": 250,
     "max_to_keep": 3
   },
   "logging": {
@@ -42,13 +42,13 @@
     "use_wandb": true,
     "project": "cs336-tinystories",
     "entity": "vilhelm-toivonen-helsinki-university",
-    "run_name": "learning_rate_medium_0.001"
+    "run_name": "learning_rate_medium"
   },
   "lr_schedule": {
     "enabled": true,
     "alpha_max": 0.001,
     "alpha_min": 0.0001,
     "warmup_steps": 500,
-    "cosine_steps": 5000
+    "cosine_steps": 8000
   }
 }
