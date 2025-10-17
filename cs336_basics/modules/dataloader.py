@@ -42,7 +42,20 @@ def dataloader(
     x_np = dataset[x_indices].astype(np.int64)
     y_np = dataset[y_indices].astype(np.int64)
 
-    X = torch.from_numpy(np.ascontiguousarray(x_np)).to(device)
-    Y = torch.from_numpy(np.ascontiguousarray(y_np)).to(device)
-    return X, Y
+    X_cpu = torch.from_numpy(np.ascontiguousarray(x_np))
+    Y_cpu = torch.from_numpy(np.ascontiguousarray(y_np))
 
+    expected_shape = (int(batch_size), int(context_length))
+    if X_cpu.shape != expected_shape:
+        if X_cpu.shape == expected_shape[::-1]:
+            X_cpu = X_cpu.transpose(0, 1).contiguous()
+            Y_cpu = Y_cpu.transpose(0, 1).contiguous()
+        else:
+            raise ValueError(
+                "dataloader produced shape "
+                f"{X_cpu.shape} but expected {expected_shape}"
+            )
+
+    X = X_cpu.to(device)
+    Y = Y_cpu.to(device)
+    return X, Y
