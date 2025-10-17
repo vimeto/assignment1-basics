@@ -221,7 +221,10 @@ def main():
         raise FileNotFoundError(f"Checkpoint not found: {args.checkpoint}")
 
     try:
-        step = load_checkpoint(src=str(checkpoint_path), model=model, optimizer=None)
+        # Load checkpoint manually since we don't have an optimizer
+        checkpoint = torch.load(str(checkpoint_path), weights_only=False)
+        model.load_state_dict(checkpoint['model'])
+        step = checkpoint.get('it', 0)
         print(f"  Loaded checkpoint from step {step}")
     except Exception as e:
         print(f"  ERROR loading checkpoint: {e}")
