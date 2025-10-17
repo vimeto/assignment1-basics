@@ -3,10 +3,10 @@
 #SBATCH --account=project_2013932
 #SBATCH --time=01:00:00
 #SBATCH --partition=gpusmall
-#SBATCH --gres=gpu:v100:1
+#SBATCH --gres=gpu:a100:1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
-#SBATCH --mem=16G
+#SBATCH --mem=64G
 #SBATCH --output=logs/eval_%j.out
 #SBATCH --error=logs/eval_%j.err
 
