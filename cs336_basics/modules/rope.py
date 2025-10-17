@@ -28,13 +28,18 @@ class RoPE(nn.Module):
         # token pos are shape (..., seq_len)
         # input x is shape (..., seq_len, d_k)
 
-        # Move to CPU for safe validation
-        try:
-            max_pos = token_positions.max().cpu().item()
-            if max_pos >= self.max_seq_len:
-                raise ValueError(f"token position {max_pos} exceeds max_seq_len {self.max_seq_len}")
-        except RuntimeError as e:
-            raise RuntimeError(f"Error validating token_positions: {e}. Shape: {token_positions.shape}, device: {token_positions.device}")
+        # Validate token positions more carefully
+        if token_positions.numel() == 0:
+            raise ValueError("token_positions is empty")
+
+        # Check for valid range without triggering CUDA errors
+        min_pos = token_positions.min().item()
+        max_pos = token_positions.max().item()
+
+        if min_pos < 0:
+            raise ValueError(f"token position {min_pos} is negative")
+        if max_pos >= self.max_seq_len:
+            raise ValueError(f"token position {max_pos} exceeds max_seq_len {self.max_seq_len}")
 
         # Validate no NaN/Inf in input
         if torch.isnan(x).any() or torch.isinf(x).any():
