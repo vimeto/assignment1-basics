@@ -41,22 +41,21 @@ def dataloader(
     if num_start_positions == 1:
         starts = np.zeros(batch_size, dtype=np.int64)
     else:
+        # Choose a stride that is coprime with the number of start positions so we
+        # can walk the dataset without repeats, but only materialise the entries
+        # we actually need for this batch. This avoids allocating an array the size
+        # of the entire dataset (which can exceed tens of millions of tokens for OWT).
         stride = int(rng.integers(1, num_start_positions))
         while math.gcd(stride, num_start_positions) != 1 and num_start_positions > 1:
             stride = int(rng.integers(1, num_start_positions))
 
         offset = int(rng.integers(0, num_start_positions))
-        order = (offset + stride * np.arange(num_start_positions, dtype=np.int64)) % num_start_positions
-
-        if batch_size <= num_start_positions:
-            max_start = max(1, num_start_positions - batch_size + 1)
-            chunk_start = int(rng.integers(0, max_start))
-            starts = order[chunk_start : chunk_start + batch_size]
-        else:
-            repeats = int(np.ceil(batch_size / num_start_positions))
-            expanded = np.tile(order, repeats)
-            chunk_start = int(rng.integers(0, num_start_positions))
-            starts = expanded[chunk_start : chunk_start + batch_size]
+        # Generate exactly batch_size indices using the stride progression. When
+        # batch_size exceeds the number of start positions we allow wrapping, which
+        # matches the previous duplicate behaviour but keeps the allocation bounded
+        # by batch_size.
+        sequence = np.arange(batch_size, dtype=np.int64)
+        starts = (offset + stride * sequence) % num_start_positions
 
     offsets = np.arange(context_length)
     x_indices = starts[:, None] + offsets
