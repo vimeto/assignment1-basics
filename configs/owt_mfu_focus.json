@@ -1,0 +1,63 @@
+{
+  "model": {
+    "vocab_size": 32000,
+    "context_length": 256,
+    "d_model": 576,
+    "num_layers": 4,
+    "num_heads": 9,
+    "d_ff": 1728,
+    "rope_theta": 500000.0,
+    "use_qk_norm": true,
+    "use_unet_residual": true,
+    "unet_gate_init": 0.25
+  },
+  "optimizer": {
+    "name": "adamw",
+    "lr": 0.0024,
+    "betas": [
+      0.9,
+      0.995
+    ],
+    "eps": 1e-08,
+    "weight_decay": 0.006,
+    "dtype": "float32"
+  },
+  "training": {
+    "total_steps": 18000,
+    "batch_size": 192,
+    "grad_accum_steps": 2,
+    "seed": 99,
+    "device": "cuda",
+    "precision": "bfloat16",
+    "grad_clip_norm": 0.8,
+    "step_interval": 1,
+    "eval_interval": 300,
+    "eval_batches": 24,
+    "use_torch_compile": true,
+    "compile_mode": "reduce-overhead"
+  },
+  "data": {
+    "train_path": "/scratch/project_2013932/vtoivone/data/owt_train.npy",
+    "val_path": "/scratch/project_2013932/vtoivone/data/owt_valid.npy",
+    "dtype": "uint16"
+  },
+  "checkpoint": {
+    "checkpoint_dir": "/scratch/project_2013932/vtoivone/checkpoints/owt_mfu_focus",
+    "save_interval": 900,
+    "max_to_keep": 3
+  },
+  "logging": {
+    "log_interval": 50,
+    "use_wandb": true,
+    "project": "cs336-owt",
+    "entity": "vilhelm-toivonen-helsinki-university",
+    "run_name": "owt-mfu-focus"
+  },
+  "lr_schedule": {
+    "enabled": true,
+    "alpha_max": 0.0024,
+    "alpha_min": 0.00024,
+    "warmup_steps": 900,
+    "cosine_steps": 17000
+  }
+}

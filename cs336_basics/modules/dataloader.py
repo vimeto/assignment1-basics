@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import numpy.typing as npt
 import torch
@@ -11,6 +13,9 @@ def dataloader(
     context_length: int,
     device: str,
     rng: np.random.Generator | None = None,
+    *,
+    non_blocking: bool = False,
+    pin_memory: bool | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Sample ``batch_size`` independent context windows and their next-token targets.
 
@@ -32,8 +37,26 @@ def dataloader(
 
     num_start_positions = dataset.size - context_length
     rng = rng or np.random.default_rng()
-    # (batch_size,)
-    starts = rng.integers(0, num_start_positions, size=batch_size)
+
+    if num_start_positions == 1:
+        starts = np.zeros(batch_size, dtype=np.int64)
+    else:
+        stride = int(rng.integers(1, num_start_positions))
+        while math.gcd(stride, num_start_positions) != 1 and num_start_positions > 1:
+            stride = int(rng.integers(1, num_start_positions))
+
+        offset = int(rng.integers(0, num_start_positions))
+        order = (offset + stride * np.arange(num_start_positions, dtype=np.int64)) % num_start_positions
+
+        if batch_size <= num_start_positions:
+            max_start = max(1, num_start_positions - batch_size + 1)
+            chunk_start = int(rng.integers(0, max_start))
+            starts = order[chunk_start : chunk_start + batch_size]
+        else:
+            repeats = int(np.ceil(batch_size / num_start_positions))
+            expanded = np.tile(order, repeats)
+            chunk_start = int(rng.integers(0, num_start_positions))
+            starts = expanded[chunk_start : chunk_start + batch_size]
 
     offsets = np.arange(context_length)
     x_indices = starts[:, None] + offsets
@@ -56,6 +79,17 @@ def dataloader(
                 f"{X_cpu.shape} but expected {expected_shape}"
             )
 
-    X = X_cpu.to(device)
-    Y = Y_cpu.to(device)
+    target_device = torch.device(device)
+    pin = pin_memory if pin_memory is not None else target_device.type == "cuda"
+    if pin:
+        X_cpu = X_cpu.pin_memory()
+        Y_cpu = Y_cpu.pin_memory()
+
+    if target_device.type == "cuda":
+        X = X_cpu.to(target_device, non_blocking=non_blocking)
+        Y = Y_cpu.to(target_device, non_blocking=non_blocking)
+    else:
+        X = X_cpu.to(target_device)
+        Y = Y_cpu.to(target_device)
+
     return X, Y

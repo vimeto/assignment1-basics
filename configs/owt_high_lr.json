@@ -1,0 +1,63 @@
+{
+  "model": {
+    "vocab_size": 32000,
+    "context_length": 256,
+    "d_model": 512,
+    "num_layers": 4,
+    "num_heads": 8,
+    "d_ff": 1344,
+    "rope_theta": 500000.0,
+    "use_qk_norm": false,
+    "use_unet_residual": false,
+    "unet_gate_init": 0.1
+  },
+  "optimizer": {
+    "name": "adamw",
+    "lr": 0.0035,
+    "betas": [
+      0.9,
+      0.98
+    ],
+    "eps": 1e-08,
+    "weight_decay": 0.008,
+    "dtype": "float32"
+  },
+  "training": {
+    "total_steps": 20000,
+    "batch_size": 256,
+    "grad_accum_steps": 1,
+    "seed": 42,
+    "device": "cuda",
+    "precision": "bfloat16",
+    "grad_clip_norm": 0.9,
+    "step_interval": 1,
+    "eval_interval": 250,
+    "eval_batches": 20,
+    "use_torch_compile": false,
+    "compile_mode": "reduce-overhead"
+  },
+  "data": {
+    "train_path": "/scratch/project_2013932/vtoivone/data/owt_train.npy",
+    "val_path": "/scratch/project_2013932/vtoivone/data/owt_valid.npy",
+    "dtype": "uint16"
+  },
+  "checkpoint": {
+    "checkpoint_dir": "/scratch/project_2013932/vtoivone/checkpoints/owt_high_lr",
+    "save_interval": 1000,
+    "max_to_keep": 3
+  },
+  "logging": {
+    "log_interval": 50,
+    "use_wandb": true,
+    "project": "cs336-owt",
+    "entity": "vilhelm-toivonen-helsinki-university",
+    "run_name": "owt-high-lr"
+  },
+  "lr_schedule": {
+    "enabled": true,
+    "alpha_max": 0.0035,
+    "alpha_min": 0.00035,
+    "warmup_steps": 600,
+    "cosine_steps": 16000
+  }
+}

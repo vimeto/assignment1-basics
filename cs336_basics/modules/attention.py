@@ -3,6 +3,7 @@ import torch.nn as nn
 import numpy as np
 from einops import einsum, rearrange
 from .rope import RoPE
+from .qk_norm import QKNorm
 
 def softmax(x: torch.Tensor, i: int) -> torch.Tensor:
     # compute the softmax on the i-th dim of tensor x
@@ -29,7 +30,16 @@ def attention(K: torch.Tensor, Q: torch.Tensor, V: torch.Tensor, mask = None) ->
 
 
 class MultiHeadAttention(nn.Module):
-    def __init__(self, d_model, num_heads, device=None, rope=None, use_rope=True):
+    def __init__(
+        self,
+        d_model,
+        num_heads,
+        device=None,
+        rope=None,
+        use_rope=True,
+        use_qk_norm=False,
+        qk_norm_eps=1e-6,
+    ):
         super().__init__()
 
         self.d_model = d_model
@@ -38,6 +48,7 @@ class MultiHeadAttention(nn.Module):
         self.d_k = d_model // num_heads
         self.rope = rope
         self.use_rope = use_rope
+        self.use_qk_norm = use_qk_norm
 
         var_dk = 2 / (self.d_k + d_model)
         std_dk = np.sqrt(var_dk)
@@ -58,6 +69,13 @@ class MultiHeadAttention(nn.Module):
         w_o = torch.empty(d_model, d_model, device=self.device)
         nn.init.trunc_normal_(w_o, mean=0.0, std=var_o, a=-3*std_o, b=3*std_o)
         self.W_o = nn.Parameter(w_o)
+
+        if self.use_qk_norm:
+            self.q_norm = QKNorm(self.d_k, eps=qk_norm_eps, device=device)
+            self.k_norm = QKNorm(self.d_k, eps=qk_norm_eps, device=device)
+        else:
+            self.q_norm = None
+            self.k_norm = None
 
     def forward(self, x: torch.Tensor, token_positions: torch.Tensor | None = None) -> torch.Tensor:
         # in_features (... sequence_length d_in)
@@ -81,6 +99,10 @@ class MultiHeadAttention(nn.Module):
         k = rearrange(k_flat, "... seq (heads d_k) -> ... heads seq d_k", heads=self.num_heads)
         v = rearrange(v_flat, "... seq (heads d_k) -> ... heads seq d_k", heads=self.num_heads)
 
+        if self.use_qk_norm and self.q_norm is not None and self.k_norm is not None:
+            q = self.q_norm(q)
+            k = self.k_norm(k)
+
         if self.use_rope and self.rope is not None and token_positions is not None:
             q = self.rope(q, token_positions)
             k = self.rope(k, token_positions)
@@ -92,6 +114,5 @@ class MultiHeadAttention(nn.Module):
         y = einsum(att, self.W_o, "... sequence_length d_model, d_out d_model -> ... sequence_length d_out")
 
         return y
-
 
 

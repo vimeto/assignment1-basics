@@ -21,6 +21,7 @@ class TransformerBlock(nn.Module):
         use_post_norm: bool = False,
         use_rmsnorm: bool = True,
         use_swiglu: bool = True,
+        use_qk_norm: bool = False,
     ):
         super().__init__()
 
@@ -45,7 +46,14 @@ class TransformerBlock(nn.Module):
         self.post_ffn_norm = norm_class(d_model, device=device) if use_post_norm else IdentityNorm(d_model)
 
         # Attention and FFN
-        self.attn = MultiHeadAttention(d_model, num_heads, device, rope, use_rope=use_rope)
+        self.attn = MultiHeadAttention(
+            d_model,
+            num_heads,
+            device,
+            rope,
+            use_rope=use_rope,
+            use_qk_norm=use_qk_norm,
+        )
         self.ffn = SwiGLU(d_model, d_ff, device) if use_swiglu else SiLU_FFN(d_model, d_ff, device)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -63,6 +71,5 @@ class TransformerBlock(nn.Module):
         y = y + ffn_output
 
         return y
-
 
 

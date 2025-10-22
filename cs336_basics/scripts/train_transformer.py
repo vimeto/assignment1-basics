@@ -4,6 +4,7 @@ import argparse
 import dataclasses
 import json
 import math
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, Tuple
@@ -42,6 +43,9 @@ class ModelConfig:
     use_post_norm: bool = False
     use_rmsnorm: bool = True
     use_swiglu: bool = True
+    use_qk_norm: bool = False
+    use_unet_residual: bool = False
+    unet_gate_init: float = 0.1
 
 
 @dataclass(frozen=True)
@@ -58,6 +62,7 @@ class OptimizerConfig:
 class TrainingConfig:
     total_steps: int = 1000
     batch_size: int = 32
+    grad_accum_steps: int = 1
     seed: int = 1234
     device: str | None = None
     precision: str = "float32"
@@ -65,6 +70,8 @@ class TrainingConfig:
     step_interval: int = 1
     eval_interval: int = 200
     eval_batches: int = 16
+    use_torch_compile: bool = False
+    compile_mode: str = "reduce-overhead"
 
 
 @dataclass(frozen=True)
@@ -184,6 +191,14 @@ def apply_cli_overrides(cfg: ExperimentConfig, args: argparse.Namespace) -> Expe
     training_kwargs: dict[str, Any] = {}
     if args.device is not None:
         training_kwargs["device"] = args.device
+    if getattr(args, "grad_accum_steps", None) is not None:
+        training_kwargs["grad_accum_steps"] = max(1, args.grad_accum_steps)
+    if getattr(args, "torch_compile", False):
+        training_kwargs["use_torch_compile"] = True
+    if getattr(args, "no_torch_compile", False):
+        training_kwargs["use_torch_compile"] = False
+    if getattr(args, "compile_mode", None) is not None:
+        training_kwargs["compile_mode"] = args.compile_mode
     if training_kwargs:
         cfg = dataclasses.replace(cfg, training=dataclasses.replace(cfg.training, **training_kwargs))
 
@@ -236,6 +251,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--checkpoint-dir", type=Path, default=None, help="Directory for saving checkpoints")
     parser.add_argument("--resume", type=Path, default=None, help="Resume from this checkpoint path")
     parser.add_argument("--device", type=str, default=None, help="Device to use (cpu, cuda, etc.)")
+    parser.add_argument("--grad-accum-steps", type=int, default=None, help="Number of gradient accumulation steps")
     parser.add_argument("--wandb-project", type=str, default=None, help="Weights & Biases project name")
     parser.add_argument("--wandb-entity", type=str, default=None, help="Weights & Biases entity name")
     parser.add_argument("--wandb-run-name", type=str, default=None, help="Weights & Biases run name")
@@ -247,6 +263,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lr-alpha-min", type=float, default=None, help="Minimum learning rate for schedule")
     parser.add_argument("--lr-warmup-steps", type=int, default=None, help="Warmup steps for schedule")
     parser.add_argument("--lr-cosine-steps", type=int, default=None, help="Cosine decay steps before floor")
+    parser.add_argument("--torch-compile", action="store_true", help="Enable torch.compile for the model")
+    parser.add_argument("--no-torch-compile", action="store_true", help="Disable torch.compile for the model")
+    parser.add_argument("--compile-mode", type=str, default=None, help="torch.compile mode (e.g., reduce-overhead)")
     return parser.parse_args()
 
 
@@ -287,6 +306,9 @@ def build_model(cfg: ExperimentConfig, device: torch.device, dtype: torch.dtype)
         use_post_norm=model_cfg.use_post_norm,
         use_rmsnorm=model_cfg.use_rmsnorm,
         use_swiglu=model_cfg.use_swiglu,
+        use_qk_norm=model_cfg.use_qk_norm,
+        use_unet_residual=model_cfg.use_unet_residual,
+        unet_gate_init=model_cfg.unet_gate_init,
     )
     if isinstance(model.layers, list):
         model.layers = torch.nn.ModuleList(model.layers)  # type: ignore[attr-defined]
@@ -384,8 +406,13 @@ def evaluate(
     device: torch.device,
     rng: np.random.Generator,
 ) -> dict[str, float]:
+    original_mode = model.training
     model.eval()
     losses: list[float] = []
+    use_autocast = device.type == "cuda" and cfg.training.precision.lower() in {"float16", "bfloat16"}
+    amp_dtype = None
+    if use_autocast:
+        amp_dtype = torch.float16 if cfg.training.precision.lower() == "float16" else torch.bfloat16
     with torch.no_grad():
         for _ in range(cfg.training.eval_batches):
             X, Y = dataloader(
@@ -394,13 +421,21 @@ def evaluate(
                 context_length=cfg.model.context_length,
                 device=device.type,
                 rng=rng,
+                non_blocking=True,
             )
-            logits = model(X)
-            loss = cross_entropy(
-                logits.reshape(-1, logits.size(-1)),
-                Y.reshape(-1),
-            )
+            with (
+                torch.cuda.amp.autocast(dtype=amp_dtype)
+                if use_autocast
+                else nullcontext()
+            ):
+                logits = model(X)
+                loss = cross_entropy(
+                    logits.reshape(-1, logits.size(-1)),
+                    Y.reshape(-1),
+                )
             losses.append(float(loss.item()))
+    if original_mode:
+        model.train()
     mean_loss = float(np.mean(losses)) if losses else float("nan")
     try:
         ppl = float(math.exp(mean_loss))
@@ -429,6 +464,16 @@ def train(cfg: ExperimentConfig) -> None:
     eval_rng = np.random.default_rng(cfg.training.seed + 1)
 
     model = build_model(cfg, device=device, dtype=dtype)
+
+    compile_available = hasattr(torch, "compile")
+    if cfg.training.use_torch_compile and compile_available:
+        compile_kwargs: dict[str, Any] = {}
+        if cfg.training.compile_mode:
+            compile_kwargs["mode"] = cfg.training.compile_mode
+        model = torch.compile(model, **compile_kwargs)
+    elif cfg.training.use_torch_compile and not compile_available:
+        print("torch.compile requested but not available in this PyTorch build; continuing without it.")
+
     model_params = list(model.parameters())
     optimizer = build_optimizer(cfg, model_params)
 
@@ -446,6 +491,23 @@ def train(cfg: ExperimentConfig) -> None:
         alpha_min = cfg.optimizer.lr
         warmup_steps = 0
         cosine_steps = cfg.training.total_steps
+
+    grad_accum_steps = max(1, cfg.training.grad_accum_steps)
+    if cfg.training.step_interval and cfg.training.step_interval > 1 and grad_accum_steps == 1:
+        grad_accum_steps = cfg.training.step_interval
+
+    use_autocast = device.type == "cuda" and cfg.training.precision.lower() in {"float16", "bfloat16"}
+    amp_dtype = None
+    if use_autocast:
+        amp_dtype = torch.float16 if cfg.training.precision.lower() == "float16" else torch.bfloat16
+
+    if use_autocast:
+        def autocast_scope():
+            return torch.cuda.amp.autocast(dtype=amp_dtype)
+    else:
+        def autocast_scope():
+            return nullcontext()
+    scaler = torch.cuda.amp.GradScaler(enabled=use_autocast and cfg.training.precision.lower() == "float16")
 
     start_step = 0
     if cfg.checkpoint.resume_path is not None:
@@ -469,30 +531,48 @@ def train(cfg: ExperimentConfig) -> None:
         else:
             lr = optimizer.param_groups[0]["lr"]
 
-        X, Y = dataloader(
-            dataset=train_tokens,
-            batch_size=cfg.training.batch_size,
-            context_length=cfg.model.context_length,
-            device=device.type,
-            rng=train_rng,
-        )
+        optimizer.zero_grad(set_to_none=True)
+        micro_losses: list[float] = []
 
-        optimizer.zero_grad()
-        logits = model(X)
-        loss = cross_entropy(
-            logits.reshape(-1, logits.size(-1)),
-            Y.reshape(-1),
-        )
-        loss.backward()
+        for _ in range(grad_accum_steps):
+            X, Y = dataloader(
+                dataset=train_tokens,
+                batch_size=cfg.training.batch_size,
+                context_length=cfg.model.context_length,
+                device=device.type,
+                rng=train_rng,
+                non_blocking=True,
+            )
+
+            with autocast_scope():
+                logits = model(X)
+                micro_loss = cross_entropy(
+                    logits.reshape(-1, logits.size(-1)),
+                    Y.reshape(-1),
+                )
+                loss = micro_loss / grad_accum_steps
+
+            micro_losses.append(float(micro_loss.detach().cpu()))
+
+            if scaler.is_enabled():
+                scaler.scale(loss).backward()
+            else:
+                loss.backward()
 
         if cfg.training.grad_clip_norm is not None:
+            if scaler.is_enabled():
+                scaler.unscale_(optimizer)
             gradient_clipping(model_params, cfg.training.grad_clip_norm)
 
-        if not cfg.training.step_interval or (step + 1) % cfg.training.step_interval == 0:
+        if scaler.is_enabled():
+            scaler.step(optimizer)
+            scaler.update()
+        else:
             optimizer.step()
 
         if (step + 1) % cfg.logging.log_interval == 0 or step == start_step:
-            metrics = {"train_loss": float(loss.item()), "lr": float(lr)}
+            mean_micro_loss = float(np.mean(micro_losses)) if micro_losses else float("nan")
+            metrics = {"train_loss": mean_micro_loss, "lr": float(lr)}
             print(f"step={step + 1} train_loss={metrics['train_loss']:.4f} lr={metrics['lr']:.6f}")
             if wandb_run is not None:
                 wandb.log({"train/loss": metrics["train_loss"], "train/lr": metrics["lr"], "step": step + 1})
