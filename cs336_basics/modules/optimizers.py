@@ -63,10 +63,16 @@ class MuonAdamW(torch.optim.Optimizer):
         for p in params:
             if not p.requires_grad:
                 continue
-            if p.ndim >= 2:
+            group_name = getattr(getattr(p, "_optimizer_group", None), "lower", lambda: None)()
+            if group_name == "vector":
+                self.vector_params.append(p)
+            elif group_name == "matrix":
                 self.matrix_params.append(p)
             else:
-                self.vector_params.append(p)
+                if p.ndim >= 2:
+                    self.matrix_params.append(p)
+                else:
+                    self.vector_params.append(p)
 
         param_groups = []
         if self.matrix_params:
