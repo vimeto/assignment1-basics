@@ -32,15 +32,6 @@ class RoPE(nn.Module):
         if token_positions.numel() == 0:
             raise ValueError("token_positions is empty")
 
-        # Check for valid range without triggering CUDA errors
-        min_pos = token_positions.min().item()
-        max_pos = token_positions.max().item()
-
-        if min_pos < 0:
-            raise ValueError(f"token position {min_pos} is negative")
-        if max_pos >= self.max_seq_len:
-            raise ValueError(f"token position {max_pos} exceeds max_seq_len {self.max_seq_len}")
-
         # Validate no NaN/Inf in input
         if torch.isnan(x).any() or torch.isinf(x).any():
             raise ValueError(f"RoPE received NaN or Inf in input x")
