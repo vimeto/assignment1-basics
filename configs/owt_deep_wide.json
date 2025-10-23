@@ -22,7 +22,7 @@
     "muon_momentum_min": 0.8,
     "muon_momentum_max": 0.95,
     "muon_warmup_steps": 400,
-    "ns_steps": 5
+    "muon_ns_steps": 5
   },
   "training": {
     "total_steps": 20000,
