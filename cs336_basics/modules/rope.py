@@ -11,8 +11,8 @@ class RoPE(nn.Module):
         self.max_seq_len = max_seq_len
         self.device = device
 
-        i_s = torch.arange(max_seq_len).unsqueeze(1).to(device)
-        k_s = torch.arange(d_k // 2).unsqueeze(0).to(device)
+        i_s = torch.arange(max_seq_len, device=device).unsqueeze(1)
+        k_s = torch.arange(d_k // 2, device=device).unsqueeze(0)
 
         thetas = i_s / (theta ** (2 * k_s / self.d_k))
         # the shape of these are (max_seq_length, d // 2)
