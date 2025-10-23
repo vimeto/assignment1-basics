@@ -37,14 +37,14 @@
     "compile_mode": "reduce-overhead"
   },
   "data": {
-    "train_path": "/scratch/project_2013932/vtoivone/data/owt_train.npy",
-    "val_path": "/scratch/project_2013932/vtoivone/data/owt_valid.npy",
+    "train_path": "/workspace/data/owt_train.npy",
+    "val_path": "/workspace/data/owt_valid.npy",
     "dtype": "uint16"
   },
   "checkpoint": {
-    "checkpoint_dir": "/scratch/project_2013932/vtoivone/checkpoints/owt_qk_unet",
-    "save_interval": 1000,
-    "max_to_keep": 3
+    "checkpoint_dir": "./checkpoints/owt_qk_unet",
+    "save_interval": 4000,
+    "max_to_keep": 1
   },
   "logging": {
     "log_interval": 50,

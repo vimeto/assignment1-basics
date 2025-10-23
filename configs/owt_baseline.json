@@ -29,8 +29,8 @@
     "eval_batches": 20
   },
   "data": {
-    "train_path": "/scratch/project_2013932/vtoivone/data/owt_train.npy",
-    "val_path": "/scratch/project_2013932/vtoivone/data/owt_valid.npy",
+    "train_path": "/workspace/data/owt_train.npy",
+    "val_path": "/workspace/data/owt_valid.npy",
     "dtype": "uint16"
   },
   "checkpoint": {
