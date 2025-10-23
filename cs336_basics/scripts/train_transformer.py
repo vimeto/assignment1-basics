@@ -412,8 +412,6 @@ def evaluate(
     original_mode = model.training
     model.eval()
     losses: list[float] = []
-    compiler_mod = getattr(torch, "compiler", None)
-    cudagraph_step = getattr(compiler_mod, "cudagraph_mark_step_begin", None) if compiler_mod else None
     use_autocast = device.type == "cuda" and cfg.training.precision.lower() in {"float16", "bfloat16"}
     amp_dtype = None
     if use_autocast:
@@ -433,8 +431,6 @@ def evaluate(
                 if use_autocast
                 else nullcontext()
             ):
-                if cudagraph_step is not None:
-                    cudagraph_step()
                 logits = model(X)
                 loss = cross_entropy(
                     logits.reshape(-1, logits.size(-1)),
