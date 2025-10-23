@@ -12,17 +12,21 @@
     "unet_gate_init": 0.18
   },
   "optimizer": {
-    "name": "adamw",
-    "lr": 0.0028,
-    "betas": [0.9, 0.99],
+    "name": "muon",
+    "lr": 0.0018,
+    "betas": [0.9, 0.999],
     "eps": 1e-8,
-    "weight_decay": 0.01,
-    "dtype": "float32"
+    "weight_decay": 0.0005,
+    "vector_lr_multiplier": 0.5,
+    "muon_momentum": 0.96,
+    "muon_momentum_min": 0.90,
+    "muon_momentum_max": 0.99,
+    "muon_warmup_steps": 800
   },
   "training": {
     "total_steps": 24000,
-    "batch_size": 128,
-    "grad_accum_steps": 3,
+    "batch_size": 256,
+    "grad_accum_steps": 2,
     "seed": 7,
     "device": "cuda",
     "precision": "bfloat16",
@@ -30,8 +34,9 @@
     "step_interval": 1,
     "eval_interval": 300,
     "eval_batches": 24,
-    "use_torch_compile": true,
-    "compile_mode": "reduce-overhead"
+    "use_torch_compile": false,
+    "compile_mode": "reduce-overhead",
+    "use_gradient_checkpointing": true
   },
   "data": {
     "train_path": "/scratch/project_2013932/vtoivone/data/owt_train.npy",

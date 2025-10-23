@@ -3,6 +3,189 @@ from typing import Optional
 import torch
 import math
 
+
+def zeroth_power_via_newtonschulz5(G: torch.Tensor, steps: int = 5, eps: float = 1e-7) -> torch.Tensor:
+    """Approximate spectral normalization used by Muon.
+
+    Returns ``G (G^T G)^{-1/2}`` using a quintic Newton-Schulz polynomial.
+    """
+
+    orig_dtype = G.dtype
+    G = G.to(torch.float32)
+    shape = G.shape
+    if G.ndim != 2:
+        raise ValueError("Input to zeroth_power_via_newtonschulz5 must be 2D")
+
+    a, b, c = (3.4445, -4.7750, 2.0315)
+    X = G / (G.norm() + eps)
+    transposed = False
+    if X.size(0) > X.size(1):
+        X = X.t()
+        transposed = True
+
+    for _ in range(steps):
+        A = X @ X.t()
+        B = b * A + c * (A @ A)
+        X = a * X + B @ X
+
+    if transposed:
+        X = X.t()
+
+    return X.to(orig_dtype).reshape(shape)
+
+
+class MuonAdamW(torch.optim.Optimizer):
+    """Muon optimizer for matrix params + AdamW for vector params.
+
+    Muon is applied to tensors with ndim >= 2. Biases / norms fall back to AdamW.
+    """
+
+    def __init__(
+        self,
+        params,
+        lr: float = 1e-3,
+        weight_decay: float = 1e-4,
+        momentum: float = 0.95,
+        momentum_min: float | None = None,
+        momentum_max: float | None = None,
+        warmup_steps: int = 0,
+        ns_steps: int = 5,
+        eps: float = 1e-7,
+        vector_lr_multiplier: float = 1.0,
+        betas: tuple[float, float] = (0.9, 0.999),
+        vector_eps: float = 1e-8,
+    ) -> None:
+
+        self.matrix_params: list[torch.nn.Parameter] = []
+        self.vector_params: list[torch.nn.Parameter] = []
+
+        params = list(params)
+        for p in params:
+            if not p.requires_grad:
+                continue
+            if p.ndim >= 2:
+                self.matrix_params.append(p)
+            else:
+                self.vector_params.append(p)
+
+        param_groups = []
+        if self.matrix_params:
+            param_groups.append({
+                "params": self.matrix_params,
+                "group_type": "matrix",
+            })
+        if self.vector_params:
+            param_groups.append({
+                "params": self.vector_params,
+                "group_type": "vector",
+            })
+
+        defaults = dict(
+            lr=lr,
+            weight_decay=weight_decay,
+            momentum=momentum,
+            momentum_min=momentum_min,
+            momentum_max=momentum_max or momentum,
+            warmup_steps=warmup_steps,
+            ns_steps=ns_steps,
+            eps=eps,
+            vector_lr_multiplier=vector_lr_multiplier,
+            betas=betas,
+            vector_eps=vector_eps,
+        )
+        super().__init__(param_groups, defaults)
+
+    def _muon_step(self, group):
+        lr = group["lr"]
+        weight_decay = group["weight_decay"]
+        momentum = group["momentum"]
+        momentum_min = group.get("momentum_min")
+        momentum_max = group.get("momentum_max", momentum)
+        warmup_steps = group.get("warmup_steps", 0)
+        ns_steps = group.get("ns_steps", 5)
+        eps = group.get("eps", 1e-7)
+
+        for p in group["params"]:
+            if p.grad is None:
+                continue
+            grad = p.grad.data
+            if weight_decay != 0:
+                grad = grad.add(p.data, alpha=weight_decay)
+
+            state = self.state[p]
+            step = state.get("step", 0) + 1
+            state["step"] = step
+
+            if grad.ndim < 2:
+                matrix = grad.unsqueeze(0)
+                reshape_back = grad.shape
+            else:
+                matrix = grad.reshape(grad.shape[0], -1)
+                reshape_back = grad.shape
+
+            orth = zeroth_power_via_newtonschulz5(matrix, steps=ns_steps, eps=eps)
+            orth = orth.reshape(reshape_back)
+
+            buf = state.get("momentum_buffer")
+            if buf is None:
+                buf = torch.zeros_like(p.data)
+
+            if momentum_min is not None and warmup_steps > 0 and step <= warmup_steps:
+                t = step / warmup_steps
+                current_momentum = momentum_min + t * (momentum_max - momentum_min)
+            else:
+                current_momentum = momentum_max
+
+            buf.mul_(current_momentum).add_(orth)
+            state["momentum_buffer"] = buf
+            p.data.add_(buf, alpha=-lr)
+
+    def _adamw_step(self, group):
+        lr = group["lr"] * group.get("vector_lr_multiplier", 1.0)
+        weight_decay = group["weight_decay"]
+        beta1, beta2 = group.get("betas", (0.9, 0.999))
+        eps = group.get("vector_eps", 1e-8)
+
+        for p in group["params"]:
+            if p.grad is None:
+                continue
+            grad = p.grad.data
+            if weight_decay != 0:
+                grad = grad.add(p.data, alpha=weight_decay)
+
+            state = self.state[p]
+            exp_avg = state.get("exp_avg")
+            exp_avg_sq = state.get("exp_avg_sq")
+            if exp_avg is None:
+                exp_avg = torch.zeros_like(p.data)
+                exp_avg_sq = torch.zeros_like(p.data)
+
+            step = state.get("step", 0) + 1
+            state["step"] = step
+
+            exp_avg.mul_(beta1).add_(grad, alpha=1 - beta1)
+            exp_avg_sq.mul_(beta2).addcmul_(grad, grad, value=1 - beta2)
+
+            denom = exp_avg_sq.sqrt().add_(eps)
+            bias_correction1 = 1 - beta1 ** step
+            bias_correction2 = 1 - beta2 ** step
+            step_size = lr * math.sqrt(bias_correction2) / bias_correction1
+
+            p.data.addcdiv_(exp_avg, denom, value=-step_size)
+
+            state["exp_avg"] = exp_avg
+            state["exp_avg_sq"] = exp_avg_sq
+
+    def step(self, closure: Optional[Callable] = None):
+        loss = None if closure is None else closure()
+        for group in self.param_groups:
+            gtype = group.get("group_type")
+            if gtype == "matrix":
+                self._muon_step(group)
+            elif gtype == "vector":
+                self._adamw_step(group)
+        return loss
+
 def learning_rate_schedule(t: int, alpha_max: float, alpha_min: float, T_w: int, T_c: int) -> float:
     if t < T_w:
         return alpha_max * (t / T_w)
@@ -91,4 +274,3 @@ if __name__ == "__main__":
     print("|\t" + "\t|\t".join([str(l) for l in losses.keys()]) + "\t|")
     for t in range(10):
         print("|\t" + "\t|\t".join([str(round(v[t], 5)) for v in losses.values()]) + "\t|")
-

@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import numpy as np
+from torch.utils.checkpoint import checkpoint
 from .transformer_block import TransformerBlock
 from .embedding import Embedding
 from .rms_norm import RMSNorm
@@ -87,13 +88,17 @@ class TransformerLM(nn.Module):
 
         # 4. linear
         self.ffn = Linear(d_model, vocab_size, device=device)
+        self.use_gradient_checkpointing = False
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
 
         y = self.embedding(x)
         skip_cache: dict[int, torch.Tensor] = {}
         for idx, block in enumerate(self.layers):
-            y = block(y)
+            if self.use_gradient_checkpointing and self.training and y.requires_grad:
+                y = checkpoint(block, y, use_reentrant=False)
+            else:
+                y = block(y)
             if self.use_unet_residual and self.skip_gates is not None:
                 if idx < self.unet_split:
                     skip_cache[idx] = y

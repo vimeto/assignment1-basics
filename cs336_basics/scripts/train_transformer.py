@@ -14,7 +14,12 @@ import torch
 
 from cs336_basics.modules.cross_entropy import cross_entropy
 from cs336_basics.modules.dataloader import dataloader
-from cs336_basics.modules.optimizers import AdamW, SGD, learning_rate_schedule
+from cs336_basics.modules.optimizers import (
+    AdamW,
+    SGD,
+    MuonAdamW,
+    learning_rate_schedule,
+)
 from cs336_basics.modules.transformer_lm import TransformerLM
 from cs336_basics.modules.checkpointing import (
     save_checkpoint as module_save_checkpoint,
@@ -56,6 +61,12 @@ class OptimizerConfig:
     eps: float = 1e-8
     weight_decay: float = 0.1
     dtype: str | None = None
+    vector_lr_multiplier: float = 1.0
+    muon_momentum: float = 0.95
+    muon_momentum_min: float | None = None
+    muon_momentum_max: float | None = None
+    muon_warmup_steps: int = 0
+    muon_ns_steps: int = 5
 
 
 @dataclass(frozen=True)
@@ -72,6 +83,7 @@ class TrainingConfig:
     eval_batches: int = 16
     use_torch_compile: bool = False
     compile_mode: str = "reduce-overhead"
+    use_gradient_checkpointing: bool = False
 
 
 @dataclass(frozen=True)
@@ -335,6 +347,20 @@ def build_optimizer(cfg: ExperimentConfig, parameters: Iterable[torch.nn.Paramet
         )
     if name == "sgd":
         return SGD(parameters, lr=opt_cfg.lr)
+    if name == "muon":
+        return MuonAdamW(
+            parameters,
+            lr=opt_cfg.lr,
+            weight_decay=opt_cfg.weight_decay,
+            momentum=opt_cfg.muon_momentum,
+            momentum_min=opt_cfg.muon_momentum_min,
+            momentum_max=opt_cfg.muon_momentum_max or opt_cfg.muon_momentum,
+            warmup_steps=opt_cfg.muon_warmup_steps,
+            ns_steps=opt_cfg.muon_ns_steps,
+            vector_lr_multiplier=opt_cfg.vector_lr_multiplier,
+            betas=opt_cfg.betas,
+            vector_eps=opt_cfg.eps,
+        )
     raise ValueError(f"Unsupported optimizer: {opt_cfg.name}")
 
 
@@ -468,13 +494,24 @@ def train(cfg: ExperimentConfig) -> None:
 
     model = build_model(cfg, device=device, dtype=dtype)
 
+    if cfg.training.use_gradient_checkpointing:
+        model.use_gradient_checkpointing = True
+
     compile_available = hasattr(torch, "compile")
-    if cfg.training.use_torch_compile and compile_available:
+    use_compile = cfg.training.use_torch_compile
+    if use_compile and cfg.training.grad_accum_steps > 1:
+        print(
+            "torch.compile is disabled because grad_accum_steps>1 is requested; "
+            "re-enable once accumulation is compile-safe."
+        )
+        use_compile = False
+
+    if use_compile and compile_available:
         compile_kwargs: dict[str, Any] = {}
         if cfg.training.compile_mode:
             compile_kwargs["mode"] = cfg.training.compile_mode
         model = torch.compile(model, **compile_kwargs)
-    elif cfg.training.use_torch_compile and not compile_available:
+    elif use_compile and not compile_available:
         print("torch.compile requested but not available in this PyTorch build; continuing without it.")
 
     model_params = list(model.parameters())

@@ -25,7 +25,7 @@
   "training": {
     "total_steps": 22000,
     "batch_size": 128,
-    "grad_accum_steps": 4,
+    "grad_accum_steps": 1,
     "seed": 123,
     "device": "cuda",
     "precision": "bfloat16",
