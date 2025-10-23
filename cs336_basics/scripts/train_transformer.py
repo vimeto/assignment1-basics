@@ -472,13 +472,9 @@ def train(cfg: ExperimentConfig) -> None:
 
     compile_available = hasattr(torch, "compile")
     if cfg.training.use_torch_compile and compile_available:
-        compile_kwargs: dict[str, Any] = {
-            "backend": "inductor",
-            "options": {"triton.cudagraphs": False},
-        }
-        if cfg.training.compile_mode:
-            compile_kwargs["mode"] = cfg.training.compile_mode
-        model = torch.compile(model, **compile_kwargs)
+        options = {"triton.cudagraphs": False}
+        mode = cfg.training.compile_mode or "default"
+        model = torch.compile(model, backend="inductor", options=options, mode=mode)
     elif cfg.training.use_torch_compile and not compile_available:
         print("torch.compile requested but not available in this PyTorch build; continuing without it.")
 
