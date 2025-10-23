@@ -127,8 +127,8 @@ TORCH_PRECISIONS: Dict[str, torch.dtype] = {
 
 if hasattr(torch, "_dynamo"):
     torch._dynamo.config.capture_scalar_outputs = True  # type: ignore[attr-defined]
-if hasattr(torch, "_inductor"):
-    torch._inductor.config.use_cudagraphs = False  # type: ignore[attr-defined]
+if hasattr(torch, "_inductor") and hasattr(torch._inductor.config, "triton"):
+    torch._inductor.config.triton.cudagraphs = False  # type: ignore[attr-defined]
 
 
 def _load_json(path: Path) -> dict[str, Any]:
