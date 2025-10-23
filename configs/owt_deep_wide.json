@@ -1,11 +1,11 @@
 {
   "model": {
     "vocab_size": 32000,
-    "context_length": 256,
-    "d_model": 640,
-    "num_layers": 10,
-    "num_heads": 10,
-    "d_ff": 1664,
+    "context_length": 320,
+    "d_model": 768,
+    "num_layers": 12,
+    "num_heads": 12,
+    "d_ff": 2048,
     "rope_theta": 500000.0,
     "use_qk_norm": true,
     "use_unet_residual": true,
@@ -13,24 +13,25 @@
   },
   "optimizer": {
     "name": "muon",
-    "lr": 0.015,
-    "betas": [0.9, 0.995],
+    "lr": 0.02,
+    "betas": [0.9, 0.95],
     "eps": 1e-8,
-    "weight_decay": 0.0001,
-    "vector_lr_multiplier": 0.8,
-    "muon_momentum": 0.985,
-    "muon_momentum_min": 0.85,
-    "muon_momentum_max": 0.995,
-    "muon_warmup_steps": 500
+    "weight_decay": 0.04,
+    "vector_lr_multiplier": 0.3,
+    "muon_momentum": 0.95,
+    "muon_momentum_min": 0.8,
+    "muon_momentum_max": 0.95,
+    "muon_warmup_steps": 400,
+    "ns_steps": 5
   },
   "training": {
-    "total_steps": 24000,
-    "batch_size": 384,
+    "total_steps": 20000,
+    "batch_size": 256,
     "grad_accum_steps": 3,
     "seed": 7,
     "device": "cuda",
     "precision": "bfloat16",
-    "grad_clip_norm": 0.9,
+    "grad_clip_norm": 1.0,
     "step_interval": 1,
     "eval_interval": 300,
     "eval_batches": 24,
@@ -45,7 +46,7 @@
   },
   "checkpoint": {
     "checkpoint_dir": "/scratch/project_2013932/vtoivone/checkpoints/owt_deep_wide",
-    "save_interval": 1200,
+    "save_interval": 1000,
     "max_to_keep": 3
   },
   "logging": {
@@ -56,6 +57,10 @@
     "run_name": "owt-deep-wide"
   },
   "lr_schedule": {
-    "enabled": false
+    "enabled": true,
+    "alpha_max": 0.0003,
+    "alpha_min": 0.0001,
+    "warmup_steps": 400,
+    "cosine_steps": 20000
   }
 }

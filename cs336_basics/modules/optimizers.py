@@ -69,6 +69,7 @@ class MuonAdamW(torch.optim.Optimizer):
             elif group_name == "matrix":
                 self.matrix_params.append(p)
             else:
+                # attention/query matrices (Q,K,V,O) or FFN weights should default to Muon
                 if p.ndim >= 2:
                     self.matrix_params.append(p)
                 else:
