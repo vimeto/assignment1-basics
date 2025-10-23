@@ -424,7 +424,7 @@ def evaluate(
                 non_blocking=True,
             )
             with (
-                torch.cuda.amp.autocast(dtype=amp_dtype)
+                torch.amp.autocast("cuda", dtype=amp_dtype)
                 if use_autocast
                 else nullcontext()
             ):
@@ -503,11 +503,14 @@ def train(cfg: ExperimentConfig) -> None:
 
     if use_autocast:
         def autocast_scope():
-            return torch.cuda.amp.autocast(dtype=amp_dtype)
+            return torch.amp.autocast("cuda", dtype=amp_dtype)
     else:
         def autocast_scope():
             return nullcontext()
-    scaler = torch.cuda.amp.GradScaler(enabled=use_autocast and cfg.training.precision.lower() == "float16")
+    scaler = torch.amp.GradScaler(
+        "cuda",
+        enabled=use_autocast and cfg.training.precision.lower() == "float16",
+    )
 
     start_step = 0
     if cfg.checkpoint.resume_path is not None:

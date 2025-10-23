@@ -13,7 +13,7 @@
   },
   "optimizer": {
     "name": "adamw",
-    "lr": 0.003,
+    "lr": 0.0018,
     "betas": [
       0.92,
       0.999
@@ -23,7 +23,7 @@
     "dtype": "float32"
   },
   "training": {
-    "total_steps": 4000,
+    "total_steps": 21000,
     "batch_size": 192,
     "grad_accum_steps": 2,
     "seed": 256,
@@ -55,8 +55,8 @@
   },
   "lr_schedule": {
     "enabled": true,
-    "alpha_max": 0.003,
-    "alpha_min": 0.0003,
+    "alpha_max": 0.0018,
+    "alpha_min": 0.00018,
     "warmup_steps": 400,
     "cosine_steps": 18000
   }
