@@ -472,7 +472,10 @@ def train(cfg: ExperimentConfig) -> None:
 
     compile_available = hasattr(torch, "compile")
     if cfg.training.use_torch_compile and compile_available:
-        compile_kwargs: dict[str, Any] = {}
+        compile_kwargs: dict[str, Any] = {
+            "backend": "inductor",
+            "options": {"triton.cudagraphs": False},
+        }
         if cfg.training.compile_mode:
             compile_kwargs["mode"] = cfg.training.compile_mode
         model = torch.compile(model, **compile_kwargs)
