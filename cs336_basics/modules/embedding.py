@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 class Embedding(nn.Module):
     def __init__(self, num_embeddings, embedding_dim, device=None, dtype=None):
@@ -15,4 +16,4 @@ class Embedding(nn.Module):
         self.embedding_table = nn.Parameter(weight)
 
     def forward(self, token_ids: torch.Tensor) -> torch.Tensor:
-        return self.embedding_table[token_ids, :]
+        return F.embedding(token_ids, self.embedding_table)

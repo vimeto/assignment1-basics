@@ -6,13 +6,10 @@ from .rope import RoPE
 from .qk_norm import QKNorm
 
 def softmax(x: torch.Tensor, i: int) -> torch.Tensor:
-    # compute the softmax on the i-th dim of tensor x
-    x_max = torch.max(x, dim=i, keepdim=True).values
-    x = x - x_max
-    exp_x = torch.exp(x)
-    sum_x = torch.sum(exp_x, dim=i, keepdim=True)
-
-    return exp_x / sum_x
+    x_max = x.amax(dim=i, keepdim=True)
+    shifted = x - x_max
+    exp_x = shifted.exp()
+    return exp_x / exp_x.sum(dim=i, keepdim=True)
 
 def attention(K: torch.Tensor, Q: torch.Tensor, V: torch.Tensor, mask = None) -> torch.Tensor:
     # K and Q (batch_size, ..., seq_len, d_k)
@@ -22,7 +19,10 @@ def attention(K: torch.Tensor, Q: torch.Tensor, V: torch.Tensor, mask = None) ->
     num = einsum(Q, K, "batch_size ... seq_len_1 d_k, batch_size ... seq_len_2 d_k -> batch_size ... seq_len_1 seq_len_2")
     num = num / np.sqrt(dim)
     if mask is not None:
-        num[..., ~mask] = float("-inf")
+        # when mask is bool, keep it on the same device and dtype-safe for cudagraphs
+        if mask.dtype != torch.bool:
+            mask = mask.to(torch.bool)
+        num = num.masked_fill(~mask, float("-inf"))
 
     num = softmax(num, -1)
     res = einsum(num, V, "batch_size ... seq_len_1 seq_len_2, batch_size ... seq_len_2 d_v -> batch_size ... seq_len_1 d_v")
@@ -107,12 +107,10 @@ class MultiHeadAttention(nn.Module):
             q = self.rope(q, token_positions)
             k = self.rope(k, token_positions)
 
-        mask = torch.tril(torch.ones(seq_len, seq_len, dtype=torch.bool)).to(d)
+        mask = torch.tril(torch.ones(seq_len, seq_len, dtype=torch.bool, device=d))
 
         att = attention(k, q, v, mask)
         att = rearrange(att, "... heads sequence_length d_k -> ... sequence_length (heads d_k)")
         y = einsum(att, self.W_o, "... sequence_length d_model, d_out d_model -> ... sequence_length d_out")
 
         return y
-
-
