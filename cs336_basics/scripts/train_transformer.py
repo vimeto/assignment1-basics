@@ -414,6 +414,8 @@ def evaluate(
     original_mode = model.training
     model.eval()
     losses: list[float] = []
+    compiler_mod = getattr(torch, "compiler", None)
+    cudagraph_step = getattr(compiler_mod, "cudagraph_mark_step_begin", None) if compiler_mod else None
     use_autocast = device.type == "cuda" and cfg.training.precision.lower() in {"float16", "bfloat16"}
     amp_dtype = None
     if use_autocast:
@@ -433,6 +435,8 @@ def evaluate(
                 if use_autocast
                 else nullcontext()
             ):
+                if cudagraph_step is not None:
+                    cudagraph_step()
                 logits = model(X)
                 loss = cross_entropy(
                     logits.reshape(-1, logits.size(-1)),
@@ -472,9 +476,10 @@ def train(cfg: ExperimentConfig) -> None:
 
     compile_available = hasattr(torch, "compile")
     if cfg.training.use_torch_compile and compile_available:
-        options = {"triton.cudagraphs": False}
-        mode = cfg.training.compile_mode or "default"
-        model = torch.compile(model, backend="inductor", options=options, mode=mode)
+        compile_kwargs: dict[str, Any] = {}
+        if cfg.training.compile_mode:
+            compile_kwargs["mode"] = cfg.training.compile_mode
+        model = torch.compile(model, **compile_kwargs)
     elif cfg.training.use_torch_compile and not compile_available:
         print("torch.compile requested but not available in this PyTorch build; continuing without it.")
 
@@ -516,6 +521,8 @@ def train(cfg: ExperimentConfig) -> None:
         enabled=use_autocast and cfg.training.precision.lower() == "float16",
     )
 
+    cudagraph_step = getattr(getattr(torch, "compiler", None), "cudagraph_mark_step_begin", None)
+
     start_step = 0
     if cfg.checkpoint.resume_path is not None:
         start_step = load_training_checkpoint(model, optimizer, cfg.checkpoint.resume_path)
@@ -550,6 +557,9 @@ def train(cfg: ExperimentConfig) -> None:
                 rng=train_rng,
                 non_blocking=True,
             )
+
+            if cudagraph_step is not None:
+                cudagraph_step()
 
             with autocast_scope():
                 logits = model(X)
