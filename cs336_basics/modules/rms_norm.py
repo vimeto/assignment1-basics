@@ -20,5 +20,5 @@ class RMSNorm(nn.Module):
         mean_sq = _reduce_mean_sq(x)
         sq = torch.sqrt(mean_sq + self.eps)
         normed = torch.mul(x, torch.reciprocal(sq))
-        return normed * self.gi
-
+        out = normed * self.gi
+        return out.clone()
