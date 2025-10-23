@@ -127,8 +127,6 @@ TORCH_PRECISIONS: Dict[str, torch.dtype] = {
 
 if hasattr(torch, "_dynamo"):
     torch._dynamo.config.capture_scalar_outputs = True  # type: ignore[attr-defined]
-if hasattr(torch, "_inductor") and hasattr(torch._inductor.config, "triton"):
-    torch._inductor.config.triton.cudagraphs = False  # type: ignore[attr-defined]
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -521,8 +519,6 @@ def train(cfg: ExperimentConfig) -> None:
         enabled=use_autocast and cfg.training.precision.lower() == "float16",
     )
 
-    cudagraph_step = getattr(getattr(torch, "compiler", None), "cudagraph_mark_step_begin", None)
-
     start_step = 0
     if cfg.checkpoint.resume_path is not None:
         start_step = load_training_checkpoint(model, optimizer, cfg.checkpoint.resume_path)
@@ -557,9 +553,6 @@ def train(cfg: ExperimentConfig) -> None:
                 rng=train_rng,
                 non_blocking=True,
             )
-
-            if cudagraph_step is not None:
-                cudagraph_step()
 
             with autocast_scope():
                 logits = model(X)
