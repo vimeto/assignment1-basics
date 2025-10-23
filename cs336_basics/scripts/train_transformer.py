@@ -125,6 +125,11 @@ TORCH_PRECISIONS: Dict[str, torch.dtype] = {
     "bfloat16": torch.bfloat16,
 }
 
+if hasattr(torch, "_dynamo"):
+    torch._dynamo.config.capture_scalar_outputs = True  # type: ignore[attr-defined]
+if hasattr(torch, "_inductor"):
+    torch._inductor.config.use_cudagraphs = False  # type: ignore[attr-defined]
+
 
 def _load_json(path: Path) -> dict[str, Any]:
     with path.open("r", encoding="utf-8") as fh:
