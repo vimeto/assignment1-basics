@@ -1,7 +1,7 @@
 {
   "model": {
     "vocab_size": 32000,
-    "context_length": 512,
+    "context_length": 448,
     "d_model": 768,
     "num_layers": 12,
     "num_heads": 12,
@@ -13,21 +13,26 @@
   },
   "optimizer": {
     "name": "muon",
-    "lr": 0.02,
+    "lr": 0.0004,
+    "depth_mu_enabled": true,
+    "depth_mu_base_lr": 0.0004,
+    "depth_mu_reference_depth": 12,
     "betas": [0.9, 0.95],
     "eps": 1e-8,
-    "weight_decay": 0.04,
-    "vector_lr_multiplier": 0.3,
+    "weight_decay": 0.1,
+    "matrix_weight_decay": 0.1,
+    "vector_weight_decay": 0.0,
+    "vector_lr_multiplier": 1.0,
     "muon_momentum": 0.95,
-    "muon_momentum_min": 0.8,
+    "muon_momentum_min": 0.95,
     "muon_momentum_max": 0.95,
-    "muon_warmup_steps": 400,
+    "muon_warmup_steps": 0,
     "muon_ns_steps": 5
   },
   "training": {
     "total_steps": 20000,
     "batch_size": 320,
-    "grad_accum_steps": 3,
+    "grad_accum_steps": 1,
     "seed": 7,
     "device": "cuda",
     "precision": "bfloat16",
@@ -35,7 +40,7 @@
     "step_interval": 1,
     "eval_interval": 300,
     "eval_batches": 24,
-    "use_torch_compile": false,
+    "use_torch_compile": true,
     "compile_mode": "reduce-overhead",
     "use_gradient_checkpointing": true
   },
@@ -58,9 +63,7 @@
   },
   "lr_schedule": {
     "enabled": true,
-    "alpha_max": 0.001,
-    "alpha_min": 0.000333,
-    "warmup_steps": 200,
-    "cosine_steps": 20000
+    "schedule_type": "linear_to_zero",
+    "warmup_tokens": 1000000000
   }
 }

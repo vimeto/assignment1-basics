@@ -45,6 +45,8 @@ class MuonAdamW(torch.optim.Optimizer):
         params,
         lr: float = 1e-3,
         weight_decay: float = 1e-4,
+        matrix_weight_decay: float | None = None,
+        vector_weight_decay: float | None = None,
         momentum: float = 0.95,
         momentum_min: float | None = None,
         momentum_max: float | None = None,
@@ -76,15 +78,20 @@ class MuonAdamW(torch.optim.Optimizer):
                     self.vector_params.append(p)
 
         param_groups = []
+        matrix_wd = matrix_weight_decay if matrix_weight_decay is not None else weight_decay
+        vector_wd = vector_weight_decay if vector_weight_decay is not None else weight_decay
         if self.matrix_params:
             param_groups.append({
                 "params": self.matrix_params,
                 "group_type": "matrix",
+                "weight_decay": matrix_wd,
             })
         if self.vector_params:
             param_groups.append({
                 "params": self.vector_params,
                 "group_type": "vector",
+                "weight_decay": vector_wd,
+                "vector_lr_multiplier": vector_lr_multiplier,
             })
 
         defaults = dict(
@@ -96,7 +103,6 @@ class MuonAdamW(torch.optim.Optimizer):
             warmup_steps=warmup_steps,
             ns_steps=ns_steps,
             eps=eps,
-            vector_lr_multiplier=vector_lr_multiplier,
             betas=betas,
             vector_eps=vector_eps,
         )
@@ -104,7 +110,7 @@ class MuonAdamW(torch.optim.Optimizer):
 
     def _muon_step(self, group):
         lr = group["lr"]
-        weight_decay = group["weight_decay"]
+        weight_decay = group.get("weight_decay", 0.0)
         momentum = group["momentum"]
         momentum_min = group.get("momentum_min")
         momentum_max = group.get("momentum_max", momentum)
@@ -116,8 +122,9 @@ class MuonAdamW(torch.optim.Optimizer):
             if p.grad is None:
                 continue
             grad = p.grad.data
-            if weight_decay != 0:
-                grad = grad.add(p.data, alpha=weight_decay)
+            param_decay = getattr(p, "_weight_decay", weight_decay)
+            if param_decay != 0:
+                grad = grad.add(p.data, alpha=param_decay)
 
             state = self.state[p]
             step = state.get("step", 0) + 1
@@ -152,7 +159,7 @@ class MuonAdamW(torch.optim.Optimizer):
 
     def _adamw_step(self, group):
         lr = group["lr"] * group.get("vector_lr_multiplier", 1.0)
-        weight_decay = group["weight_decay"]
+        weight_decay = group.get("weight_decay", 0.0)
         beta1, beta2 = group.get("betas", (0.9, 0.999))
         eps = group.get("vector_eps", 1e-8)
 
@@ -160,8 +167,9 @@ class MuonAdamW(torch.optim.Optimizer):
             if p.grad is None:
                 continue
             grad = p.grad.data
-            if weight_decay != 0:
-                grad = grad.add(p.data, alpha=weight_decay)
+            param_decay = getattr(p, "_weight_decay", weight_decay)
+            if param_decay != 0:
+                grad = grad.add(p.data, alpha=param_decay)
 
             state = self.state[p]
             exp_avg = state.get("exp_avg")
@@ -206,6 +214,20 @@ def learning_rate_schedule(t: int, alpha_max: float, alpha_min: float, T_w: int,
         return alpha_min + 1/2 * (1 + math.cos(math.pi * (t - T_w)/(T_c - T_w))) * (alpha_max - alpha_min)
 
     return alpha_min
+
+
+def linear_warmup_decay(step: int, alpha_max: float, warmup_steps: int, total_steps: int) -> float:
+    if total_steps <= 0:
+        raise ValueError("total_steps must be positive")
+    warmup_steps = max(0, warmup_steps)
+    if warmup_steps > 0 and step <= warmup_steps:
+        return alpha_max * (step / warmup_steps)
+    if step >= total_steps:
+        return 0.0
+    decay_steps = max(1, total_steps - warmup_steps)
+    progress = (step - warmup_steps) / decay_steps
+    progress = min(max(progress, 0.0), 1.0)
+    return alpha_max * (1.0 - progress)
 
 
 class SGD(torch.optim.Optimizer):

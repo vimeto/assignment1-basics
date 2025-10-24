@@ -24,6 +24,7 @@ from cs336_basics.modules.optimizers import (
     SGD,
     MuonAdamW,
     learning_rate_schedule,
+    linear_warmup_decay,
 )
 from cs336_basics.modules.transformer_lm import TransformerLM
 from cs336_basics.modules.checkpointing import (
@@ -65,6 +66,8 @@ class OptimizerConfig:
     betas: Tuple[float, float] = (0.9, 0.999)
     eps: float = 1e-8
     weight_decay: float = 0.1
+    matrix_weight_decay: float | None = None
+    vector_weight_decay: float | None = None
     dtype: str | None = None
     vector_lr_multiplier: float = 1.0
     muon_momentum: float = 0.95
@@ -72,6 +75,9 @@ class OptimizerConfig:
     muon_momentum_max: float | None = None
     muon_warmup_steps: int = 0
     muon_ns_steps: int = 5
+    depth_mu_enabled: bool = False
+    depth_mu_base_lr: float = 4e-4
+    depth_mu_reference_depth: int = 16
 
 
 @dataclass(frozen=True)
@@ -123,6 +129,9 @@ class LearningRateScheduleConfig:
     alpha_min: float | None = None
     warmup_steps: int = 0
     cosine_steps: int | None = None
+    schedule_type: str = "cosine"
+    warmup_tokens: int | None = None
+    decay_tokens: int | None = None
 
 
 @dataclass(frozen=True)
@@ -302,6 +311,17 @@ def resolve_device(device_override: str | None) -> torch.device:
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
+def resolve_base_learning_rate(cfg: ExperimentConfig) -> float:
+    opt_cfg = cfg.optimizer
+    if opt_cfg.depth_mu_enabled:
+        depth = cfg.model.num_layers
+        if depth <= 0:
+            raise ValueError("Model depth must be positive for Depth-μ scaling")
+        reference_depth = max(1, opt_cfg.depth_mu_reference_depth)
+        return opt_cfg.depth_mu_base_lr * (reference_depth / depth)
+    return opt_cfg.lr
+
+
 def load_memmap(path: Path, dtype: str) -> np.ndarray:
     if not path.exists():
         raise FileNotFoundError(f"Dataset file not found: {path}")
@@ -333,14 +353,25 @@ def build_model(cfg: ExperimentConfig, device: torch.device, dtype: torch.dtype)
     if isinstance(model.layers, list):
         model.layers = torch.nn.ModuleList(model.layers)  # type: ignore[attr-defined]
 
-    # mark embeddings/head for vector optimizer treatment when using Muon
+    # mark embeddings for vector optimizer treatment when using Muon
     model.embedding.embedding_table._optimizer_group = "vector"
-    # model.ffn.linear._optimizer_group = "vector"
     model = model.to(device=device, dtype=dtype)
+
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            continue
+        if param.ndim >= 2 and name.startswith("layers"):
+            param._weight_decay = 0.1
+        else:
+            param._weight_decay = 0.0
     return model
 
 
-def build_optimizer(cfg: ExperimentConfig, parameters: Iterable[torch.nn.Parameter]) -> torch.optim.Optimizer:
+def build_optimizer(
+    cfg: ExperimentConfig,
+    parameters: Iterable[torch.nn.Parameter],
+    base_lr: float,
+) -> torch.optim.Optimizer:
     opt_cfg = cfg.optimizer
     name = opt_cfg.name.lower()
     if name == "adamw":
@@ -348,19 +379,23 @@ def build_optimizer(cfg: ExperimentConfig, parameters: Iterable[torch.nn.Paramet
         optimizer_dtype = TORCH_PRECISIONS.get(opt_cfg.dtype.lower()) if opt_cfg.dtype else None
         return AdamW(
             parameters,
-            lr=opt_cfg.lr,
+            lr=base_lr,
             betas=opt_cfg.betas,
             eps=opt_cfg.eps,
             weight_decay=opt_cfg.weight_decay,
             dtype=optimizer_dtype,
         )
     if name == "sgd":
-        return SGD(parameters, lr=opt_cfg.lr)
+        return SGD(parameters, lr=base_lr)
     if name == "muon":
+        matrix_wd = opt_cfg.matrix_weight_decay if opt_cfg.matrix_weight_decay is not None else opt_cfg.weight_decay
+        vector_wd = opt_cfg.vector_weight_decay if opt_cfg.vector_weight_decay is not None else 0.0
         return MuonAdamW(
             parameters,
-            lr=opt_cfg.lr,
+            lr=base_lr,
             weight_decay=opt_cfg.weight_decay,
+            matrix_weight_decay=matrix_wd,
+            vector_weight_decay=vector_wd,
             momentum=opt_cfg.muon_momentum,
             momentum_min=opt_cfg.muon_momentum_min,
             momentum_max=opt_cfg.muon_momentum_max or opt_cfg.muon_momentum,
@@ -539,26 +574,42 @@ def train(cfg: ExperimentConfig) -> None:
         print("torch.compile requested but not available in this PyTorch build; continuing without it.")
 
     model_params = list(model.parameters())
-    optimizer = build_optimizer(cfg, model_params)
-
-    schedule_cfg = cfg.lr_schedule
-    schedule_active = schedule_cfg.enabled
-    if schedule_active:
-        alpha_max = schedule_cfg.alpha_max if schedule_cfg.alpha_max is not None else cfg.optimizer.lr
-        alpha_min = schedule_cfg.alpha_min if schedule_cfg.alpha_min is not None else alpha_max
-        warmup_steps = schedule_cfg.warmup_steps
-        cosine_steps = schedule_cfg.cosine_steps if schedule_cfg.cosine_steps is not None else cfg.training.total_steps
-        if cosine_steps <= warmup_steps:
-            raise ValueError("lr_schedule.cosine_steps must be greater than lr_schedule.warmup_steps")
-    else:
-        alpha_max = cfg.optimizer.lr
-        alpha_min = cfg.optimizer.lr
-        warmup_steps = 0
-        cosine_steps = cfg.training.total_steps
+    base_lr = resolve_base_learning_rate(cfg)
+    optimizer = build_optimizer(cfg, model_params, base_lr)
+    setattr(optimizer, "_base_lr", base_lr)
 
     grad_accum_steps = max(1, cfg.training.grad_accum_steps)
     if cfg.training.step_interval and cfg.training.step_interval > 1 and grad_accum_steps == 1:
         grad_accum_steps = cfg.training.step_interval
+
+    schedule_cfg = cfg.lr_schedule
+    schedule_active = schedule_cfg.enabled
+    schedule_type = getattr(schedule_cfg, "schedule_type", "cosine").lower()
+    batch_tokens = int(cfg.training.batch_size) * int(cfg.model.context_length)
+    tokens_per_step = max(1, batch_tokens * grad_accum_steps)
+    warmup_steps = schedule_cfg.warmup_steps
+    if schedule_cfg.warmup_tokens is not None:
+        warmup_steps = max(1, math.ceil(schedule_cfg.warmup_tokens / tokens_per_step))
+
+    if schedule_active:
+        if schedule_type in {"linear", "linear_to_zero"}:
+            total_schedule_steps = schedule_cfg.decay_tokens
+            if total_schedule_steps is not None:
+                total_schedule_steps = max(warmup_steps + 1, math.ceil(total_schedule_steps / tokens_per_step))
+            else:
+                total_schedule_steps = cfg.training.total_steps
+            if total_schedule_steps <= warmup_steps:
+                raise ValueError("Linear schedule requires decay region after warmup")
+        else:
+            alpha_max = schedule_cfg.alpha_max if schedule_cfg.alpha_max is not None else base_lr
+            alpha_min = schedule_cfg.alpha_min if schedule_cfg.alpha_min is not None else alpha_max
+            cosine_steps = schedule_cfg.cosine_steps if schedule_cfg.cosine_steps is not None else cfg.training.total_steps
+            if cosine_steps <= warmup_steps:
+                raise ValueError("lr_schedule.cosine_steps must be greater than lr_schedule.warmup_steps")
+    else:
+        alpha_max = base_lr
+        alpha_min = base_lr
+        cosine_steps = cfg.training.total_steps
 
     use_autocast = device.type == "cuda" and cfg.training.precision.lower() in {"float16", "bfloat16"}
     amp_dtype = None
@@ -586,24 +637,30 @@ def train(cfg: ExperimentConfig) -> None:
     model.train()
     for step in range(start_step, cfg.training.total_steps):
         if schedule_active:
-            lr_sched = learning_rate_schedule(
-                step + 1,
-                alpha_max=alpha_max,
-                alpha_min=alpha_min,
-                T_w=warmup_steps,
-                T_c=cosine_steps,
-            )
-            if isinstance(optimizer, MuonAdamW):
-                for group in optimizer.param_groups:
-                    if group.get("group_type") == "vector":
-                        group["lr"] = lr_sched
+            if schedule_type in {"linear", "linear_to_zero"}:
+                lr_sched = linear_warmup_decay(
+                    step + 1,
+                    alpha_max=base_lr,
+                    warmup_steps=warmup_steps,
+                    total_steps=total_schedule_steps,
+                )
             else:
-                for group in optimizer.param_groups:
-                    group["lr"] = lr_sched
+                lr_sched = learning_rate_schedule(
+                    step + 1,
+                    alpha_max=alpha_max,
+                    alpha_min=alpha_min,
+                    T_w=warmup_steps,
+                    T_c=cosine_steps,
+                )
+            for group in optimizer.param_groups:
+                group["lr"] = lr_sched
         # capture lr used for logging (vector LR if Muon, else first group)
         if isinstance(optimizer, MuonAdamW):
             vector_group = next((g for g in optimizer.param_groups if g.get("group_type") == "vector"), None)
-            lr = float(vector_group["lr"]) if vector_group is not None else float(optimizer.param_groups[0]["lr"])
+            if vector_group is not None:
+                lr = float(vector_group.get("effective_lr", vector_group["lr"]))
+            else:
+                lr = float(optimizer.param_groups[0]["lr"])
         else:
             lr = float(optimizer.param_groups[0]["lr"])
 
