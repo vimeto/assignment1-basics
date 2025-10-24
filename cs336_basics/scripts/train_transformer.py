@@ -335,7 +335,7 @@ def build_model(cfg: ExperimentConfig, device: torch.device, dtype: torch.dtype)
 
     # mark embeddings/head for vector optimizer treatment when using Muon
     model.embedding.embedding_table._optimizer_group = "vector"
-    model.ffn.linear._optimizer_group = "vector"
+    # model.ffn.linear._optimizer_group = "vector"
     model = model.to(device=device, dtype=dtype)
     return model
 
