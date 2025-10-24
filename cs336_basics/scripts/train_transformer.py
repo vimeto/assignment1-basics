@@ -12,6 +12,11 @@ from typing import Any, Dict, Iterable, Tuple
 import numpy as np
 import torch
 
+try:
+    from torch.amp import GradScaler as TorchGradScaler  # type: ignore[attr-defined]
+except (ImportError, AttributeError):  # pragma: no cover
+    from torch.cuda.amp import GradScaler as TorchGradScaler  # type: ignore
+
 from cs336_basics.modules.cross_entropy import cross_entropy
 from cs336_basics.modules.dataloader import dataloader
 from cs336_basics.modules.optimizers import (
@@ -566,7 +571,7 @@ def train(cfg: ExperimentConfig) -> None:
     else:
         def autocast_scope():
             return nullcontext()
-    scaler = torch.amp.GradScaler(
+    scaler = TorchGradScaler(
         "cuda",
         enabled=use_autocast and cfg.training.precision.lower() == "float16",
     )
@@ -581,17 +586,26 @@ def train(cfg: ExperimentConfig) -> None:
     model.train()
     for step in range(start_step, cfg.training.total_steps):
         if schedule_active:
-            lr = learning_rate_schedule(
+            lr_sched = learning_rate_schedule(
                 step + 1,
                 alpha_max=alpha_max,
                 alpha_min=alpha_min,
                 T_w=warmup_steps,
                 T_c=cosine_steps,
             )
-            for group in optimizer.param_groups:
-                group["lr"] = lr
+            if isinstance(optimizer, MuonAdamW):
+                for group in optimizer.param_groups:
+                    if group.get("group_type") == "vector":
+                        group["lr"] = lr_sched
+            else:
+                for group in optimizer.param_groups:
+                    group["lr"] = lr_sched
+        # capture lr used for logging (vector LR if Muon, else first group)
+        if isinstance(optimizer, MuonAdamW):
+            vector_group = next((g for g in optimizer.param_groups if g.get("group_type") == "vector"), None)
+            lr = float(vector_group["lr"]) if vector_group is not None else float(optimizer.param_groups[0]["lr"])
         else:
-            lr = optimizer.param_groups[0]["lr"]
+            lr = float(optimizer.param_groups[0]["lr"])
 
         optimizer.zero_grad(set_to_none=True)
         micro_losses: list[float] = []

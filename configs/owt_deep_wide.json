@@ -1,7 +1,7 @@
 {
   "model": {
     "vocab_size": 32000,
-    "context_length": 320,
+    "context_length": 512,
     "d_model": 768,
     "num_layers": 12,
     "num_heads": 12,
@@ -26,7 +26,7 @@
   },
   "training": {
     "total_steps": 20000,
-    "batch_size": 256,
+    "batch_size": 320,
     "grad_accum_steps": 3,
     "seed": 7,
     "device": "cuda",
@@ -40,12 +40,12 @@
     "use_gradient_checkpointing": true
   },
   "data": {
-    "train_path": "/workspace/data/owt_train.npy",
-    "val_path": "/workspace/data/owt_valid.npy",
+    "train_path": "/data0/data1/owt_train.npy",
+    "val_path": "/data0/data1/owt_valid.npy",
     "dtype": "uint16"
   },
   "checkpoint": {
-    "checkpoint_dir": "/scratch/project_2013932/vtoivone/checkpoints/owt_deep_wide",
+    "checkpoint_dir": "./checkpoints/owt_deep_wide",
     "save_interval": 1000,
     "max_to_keep": 3
   },
