@@ -56,6 +56,8 @@ class MuonAdamW(torch.optim.Optimizer):
         vector_lr_multiplier: float = 1.0,
         betas: tuple[float, float] = (0.9, 0.999),
         vector_eps: float = 1e-8,
+        matrix_base_lr: float | None = None,
+        vector_base_lr: float | None = None,
     ) -> None:
 
         self.matrix_params: list[torch.nn.Parameter] = []
@@ -80,11 +82,15 @@ class MuonAdamW(torch.optim.Optimizer):
         param_groups = []
         matrix_wd = matrix_weight_decay if matrix_weight_decay is not None else weight_decay
         vector_wd = vector_weight_decay if vector_weight_decay is not None else weight_decay
+        matrix_base_lr = matrix_base_lr if matrix_base_lr is not None else lr
+        vector_base_lr = vector_base_lr if vector_base_lr is not None else lr
         if self.matrix_params:
             param_groups.append({
                 "params": self.matrix_params,
                 "group_type": "matrix",
                 "weight_decay": matrix_wd,
+                "lr": matrix_base_lr,
+                "base_lr": matrix_base_lr,
             })
         if self.vector_params:
             param_groups.append({
@@ -92,6 +98,8 @@ class MuonAdamW(torch.optim.Optimizer):
                 "group_type": "vector",
                 "weight_decay": vector_wd,
                 "vector_lr_multiplier": vector_lr_multiplier,
+                "lr": vector_base_lr,
+                "base_lr": vector_base_lr,
             })
 
         defaults = dict(

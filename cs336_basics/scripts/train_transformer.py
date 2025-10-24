@@ -78,6 +78,11 @@ class OptimizerConfig:
     depth_mu_enabled: bool = False
     depth_mu_base_lr: float = 4e-4
     depth_mu_reference_depth: int = 16
+    matrix_base_lr: float | None = None
+    vector_base_lr: float | None = None
+    muon_lr_decay_start: int | None = None
+    muon_lr_decay_end: int | None = None
+    muon_lr_final: float | None = None
 
 
 @dataclass(frozen=True)
@@ -92,6 +97,7 @@ class TrainingConfig:
     step_interval: int = 1
     eval_interval: int = 200
     eval_batches: int = 16
+    eval_batch_size: int | None = None
     use_torch_compile: bool = False
     compile_mode: str = "reduce-overhead"
     use_gradient_checkpointing: bool = False
@@ -390,7 +396,9 @@ def build_optimizer(
     if name == "muon":
         matrix_wd = opt_cfg.matrix_weight_decay if opt_cfg.matrix_weight_decay is not None else opt_cfg.weight_decay
         vector_wd = opt_cfg.vector_weight_decay if opt_cfg.vector_weight_decay is not None else 0.0
-        return MuonAdamW(
+        matrix_lr = opt_cfg.matrix_base_lr if opt_cfg.matrix_base_lr is not None else opt_cfg.lr
+        vector_lr = opt_cfg.vector_base_lr if opt_cfg.vector_base_lr is not None else opt_cfg.lr
+        optimizer = MuonAdamW(
             parameters,
             lr=base_lr,
             weight_decay=opt_cfg.weight_decay,
@@ -404,7 +412,12 @@ def build_optimizer(
             vector_lr_multiplier=opt_cfg.vector_lr_multiplier,
             betas=opt_cfg.betas,
             vector_eps=opt_cfg.eps,
+            matrix_base_lr=matrix_lr,
+            vector_base_lr=vector_lr,
         )
+        setattr(optimizer, "_matrix_base_lr", matrix_lr)
+        setattr(optimizer, "_vector_base_lr", vector_lr)
+        return optimizer
     raise ValueError(f"Unsupported optimizer: {opt_cfg.name}")
 
 
@@ -501,11 +514,12 @@ def evaluate(
     amp_dtype = None
     if use_autocast:
         amp_dtype = torch.float16 if cfg.training.precision.lower() == "float16" else torch.bfloat16
+    eval_batch_size = cfg.training.eval_batch_size or cfg.training.batch_size
     with torch.no_grad():
         for _ in range(cfg.training.eval_batches):
             X, Y = dataloader(
                 dataset=dataset,
-                batch_size=cfg.training.batch_size,
+                batch_size=eval_batch_size,
                 context_length=cfg.model.context_length,
                 device=device.type,
                 rng=rng,
@@ -638,30 +652,51 @@ def train(cfg: ExperimentConfig) -> None:
 
     model.train()
     for step in range(start_step, cfg.training.total_steps):
+        current_step = step + 1
         if schedule_active:
             if schedule_type in {"linear", "linear_to_zero"}:
                 lr_sched = linear_warmup_decay(
-                    step + 1,
+                    current_step,
                     alpha_max=base_lr,
                     warmup_steps=warmup_steps,
                     total_steps=total_schedule_steps,
                 )
             else:
                 lr_sched = learning_rate_schedule(
-                    step + 1,
+                    current_step,
                     alpha_max=alpha_max,
                     alpha_min=alpha_min,
                     T_w=warmup_steps,
                     T_c=cosine_steps,
                 )
-            if isinstance(optimizer, MuonAdamW):
-                for group in optimizer.param_groups:
-                    group_type = group.get("group_type")
-                    if group_type == "vector":
+        else:
+            lr_sched = None
+
+        if isinstance(optimizer, MuonAdamW):
+            opt_cfg = cfg.optimizer
+            matrix_base_lr = getattr(optimizer, "_matrix_base_lr", base_lr)
+            vector_base_lr = getattr(optimizer, "_vector_base_lr", base_lr)
+            decay_start = opt_cfg.muon_lr_decay_start
+            decay_end = opt_cfg.muon_lr_decay_end if opt_cfg.muon_lr_decay_end is not None else cfg.training.total_steps
+            final_matrix_lr = opt_cfg.muon_lr_final if opt_cfg.muon_lr_final is not None else matrix_base_lr
+            for group in optimizer.param_groups:
+                gtype = group.get("group_type")
+                if gtype == "vector":
+                    if lr_sched is not None:
                         group["lr"] = lr_sched
                     else:
-                        group["lr"] = group.get("base_lr", base_lr)
-            else:
+                        group["lr"] = group.get("base_lr", vector_base_lr)
+                elif gtype == "matrix":
+                    matrix_lr = group.get("base_lr", matrix_base_lr)
+                    if decay_start is not None:
+                        if decay_end <= decay_start:
+                            decay_end = decay_start + 1
+                        if current_step >= decay_start:
+                            progress = min(1.0, max(0.0, (current_step - decay_start) / max(1, decay_end - decay_start)))
+                            matrix_lr = matrix_base_lr + (final_matrix_lr - matrix_base_lr) * progress
+                    group["lr"] = matrix_lr
+        else:
+            if lr_sched is not None:
                 for group in optimizer.param_groups:
                     group["lr"] = lr_sched
         # capture lr used for logging (vector LR if Muon, else first group)

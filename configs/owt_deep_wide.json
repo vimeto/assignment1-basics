@@ -3,8 +3,8 @@
     "vocab_size": 32000,
     "context_length": 448,
     "d_model": 768,
-    "num_layers": 12,
-    "num_heads": 8,
+    "num_layers": 10,
+    "num_heads": 16,
     "d_ff": 2048,
     "rope_theta": 500000.0,
     "use_qk_norm": true,
@@ -13,25 +13,28 @@
   },
   "optimizer": {
     "name": "muon",
-    "lr": 0.0004,
-    "depth_mu_enabled": true,
-    "depth_mu_base_lr": 0.0004,
-    "depth_mu_reference_depth": 12,
+    "lr": 0.0005,
+    "depth_mu_enabled": false,
     "betas": [0.9, 0.95],
     "eps": 1e-8,
-    "weight_decay": 0.1,
-    "matrix_weight_decay": 0.1,
+    "weight_decay": 0.0005,
+    "matrix_weight_decay": 0.0005,
     "vector_weight_decay": 0.0,
     "vector_lr_multiplier": 1.0,
-    "muon_momentum": 0.95,
-    "muon_momentum_min": 0.8,
-    "muon_momentum_max": 0.95,
+    "muon_momentum": 0.99,
+    "muon_momentum_min": 0.9,
+    "muon_momentum_max": 0.99,
     "muon_warmup_steps": 400,
-    "muon_ns_steps": 5
+    "muon_ns_steps": 5,
+    "matrix_base_lr": 0.012,
+    "vector_base_lr": 0.0005,
+    "muon_lr_decay_start": 2000,
+    "muon_lr_decay_end": 20000,
+    "muon_lr_final": 0.002
   },
   "training": {
     "total_steps": 20000,
-    "batch_size": 256,
+    "batch_size": 192,
     "grad_accum_steps": 3,
     "seed": 7,
     "device": "cuda",
@@ -40,6 +43,7 @@
     "step_interval": 1,
     "eval_interval": 300,
     "eval_batches": 24,
+    "eval_batch_size": 96,
     "use_torch_compile": false,
     "compile_mode": "reduce-overhead",
     "use_gradient_checkpointing": true
@@ -63,7 +67,10 @@
   },
   "lr_schedule": {
     "enabled": true,
-    "schedule_type": "linear_to_zero",
-    "warmup_tokens": 25000000
+    "schedule_type": "cosine",
+    "alpha_max": 0.0005,
+    "alpha_min": 0.00005,
+    "warmup_steps": 300,
+    "cosine_steps": 20000
   }
 }
