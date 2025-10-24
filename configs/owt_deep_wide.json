@@ -1,11 +1,11 @@
 {
   "model": {
     "vocab_size": 32000,
-    "context_length": 448,
-    "d_model": 768,
+    "context_length": 384,
+    "d_model": 704,
     "num_layers": 10,
     "num_heads": 16,
-    "d_ff": 2048,
+    "d_ff": 2304,
     "rope_theta": 500000.0,
     "use_qk_norm": true,
     "use_unet_residual": true,
@@ -27,14 +27,14 @@
     "muon_warmup_steps": 400,
     "muon_ns_steps": 5,
     "matrix_base_lr": 0.012,
-    "vector_base_lr": 0.0005,
-    "muon_lr_decay_start": 2000,
-    "muon_lr_decay_end": 20000,
+    "vector_base_lr": 0.0015,
+    "muon_lr_decay_start": 500,
+    "muon_lr_decay_end": 8000,
     "muon_lr_final": 0.002
   },
   "training": {
     "total_steps": 20000,
-    "batch_size": 192,
+    "batch_size": 256,
     "grad_accum_steps": 3,
     "seed": 7,
     "device": "cuda",
@@ -68,9 +68,9 @@
   "lr_schedule": {
     "enabled": true,
     "schedule_type": "cosine",
-    "alpha_max": 0.0005,
+    "alpha_max": 0.0015,
     "alpha_min": 0.00005,
-    "warmup_steps": 300,
+    "warmup_steps": 0,
     "cosine_steps": 20000
   }
 }
