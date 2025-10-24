@@ -147,6 +147,9 @@ class MuonAdamW(torch.optim.Optimizer):
             state["momentum_buffer"] = buf
             p.data.add_(buf, alpha=-lr)
 
+        group["effective_lr"] = lr
+        group["current_momentum"] = current_momentum
+
     def _adamw_step(self, group):
         lr = group["lr"] * group.get("vector_lr_multiplier", 1.0)
         weight_decay = group["weight_decay"]
@@ -182,6 +185,8 @@ class MuonAdamW(torch.optim.Optimizer):
 
             state["exp_avg"] = exp_avg
             state["exp_avg_sq"] = exp_avg_sq
+
+        group["effective_lr"] = lr
 
     def step(self, closure: Optional[Callable] = None):
         loss = None if closure is None else closure()

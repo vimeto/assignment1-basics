@@ -368,6 +368,21 @@ def build_optimizer(cfg: ExperimentConfig, parameters: Iterable[torch.nn.Paramet
     raise ValueError(f"Unsupported optimizer: {opt_cfg.name}")
 
 
+def _grad_l2_norm(parameters: Iterable[torch.nn.Parameter]) -> float:
+    total = None
+    for p in parameters:
+        if p.grad is None:
+            continue
+        grad = p.grad
+        if grad.is_sparse:
+            grad = grad.coalesce().values()
+        sq = grad.pow(2).sum()
+        total = sq if total is None else total + sq
+    if total is None:
+        return 0.0
+    return float(torch.sqrt(total).cpu())
+
+
 def serialize_config(obj: Any) -> Any:
     if dataclasses.is_dataclass(obj):
         return {field.name: serialize_config(getattr(obj, field.name)) for field in dataclasses.fields(obj)}
@@ -606,9 +621,12 @@ def train(cfg: ExperimentConfig) -> None:
             else:
                 loss.backward()
 
+        if scaler.is_enabled():
+            scaler.unscale_(optimizer)
+
+        grad_norm = _grad_l2_norm(model_params)
+
         if cfg.training.grad_clip_norm is not None:
-            if scaler.is_enabled():
-                scaler.unscale_(optimizer)
             gradient_clipping(model_params, cfg.training.grad_clip_norm)
 
         if scaler.is_enabled():
@@ -619,10 +637,35 @@ def train(cfg: ExperimentConfig) -> None:
 
         if (step + 1) % cfg.logging.log_interval == 0 or step == start_step:
             mean_micro_loss = float(np.mean(micro_losses)) if micro_losses else float("nan")
-            metrics = {"train_loss": mean_micro_loss, "lr": float(lr)}
-            print(f"step={step + 1} train_loss={metrics['train_loss']:.4f} lr={metrics['lr']:.6f}")
+            metrics: dict[str, float | None] = {
+                "train/loss": mean_micro_loss,
+                "train/lr": float(lr),
+                "optimizer/global_grad_norm": grad_norm,
+            }
+
+            if isinstance(optimizer, MuonAdamW):
+                matrix_lr = None
+                vector_lr = None
+                muon_momentum = None
+                for group in optimizer.param_groups:
+                    gtype = group.get("group_type")
+                    if gtype == "matrix":
+                        matrix_lr = float(group.get("effective_lr", group["lr"]))
+                        muon_momentum = float(group.get("current_momentum", optimizer.defaults.get("momentum", 0.0)))
+                    elif gtype == "vector":
+                        vector_lr = float(group.get("effective_lr", group["lr"]))
+                metrics["optimizer/matrix_lr"] = matrix_lr
+                metrics["optimizer/vector_lr"] = vector_lr
+                metrics["optimizer/muon_momentum"] = muon_momentum
+            else:
+                metrics["optimizer/lr"] = float(lr)
+
+            print(
+                f"step={step + 1} train_loss={mean_micro_loss:.4f}"
+                + (f" grad_norm={grad_norm:.4f}" if grad_norm is not None else "")
+            )
             if wandb_run is not None:
-                wandb.log({"train/loss": metrics["train_loss"], "train/lr": metrics["lr"], "step": step + 1})
+                wandb.log({**metrics, "step": step + 1})
 
         if (step + 1) % cfg.training.eval_interval == 0:
             val_metrics = evaluate(model, val_tokens, cfg, device, eval_rng)
