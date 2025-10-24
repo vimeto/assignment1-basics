@@ -31,8 +31,8 @@
   },
   "training": {
     "total_steps": 20000,
-    "batch_size": 320,
-    "grad_accum_steps": 1,
+    "batch_size": 256,
+    "grad_accum_steps": 3,
     "seed": 7,
     "device": "cuda",
     "precision": "bfloat16",
@@ -40,7 +40,7 @@
     "step_interval": 1,
     "eval_interval": 300,
     "eval_batches": 24,
-    "use_torch_compile": true,
+    "use_torch_compile": false,
     "compile_mode": "reduce-overhead",
     "use_gradient_checkpointing": true
   },
@@ -64,6 +64,6 @@
   "lr_schedule": {
     "enabled": true,
     "schedule_type": "linear_to_zero",
-    "warmup_tokens": 1000000000
+    "warmup_tokens": 25000000
   }
 }
