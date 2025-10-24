@@ -653,7 +653,6 @@ def train(cfg: ExperimentConfig) -> None:
             mean_micro_loss = float(np.mean(micro_losses)) if micro_losses else float("nan")
             metrics: dict[str, float | None] = {
                 "train/loss": mean_micro_loss,
-                "train/lr": float(lr),
                 "optimizer/global_grad_norm": grad_norm,
             }
 
@@ -671,13 +670,27 @@ def train(cfg: ExperimentConfig) -> None:
                 metrics["optimizer/matrix_lr"] = matrix_lr
                 metrics["optimizer/vector_lr"] = vector_lr
                 metrics["optimizer/muon_momentum"] = muon_momentum
+                console_parts = [
+                    f"step={step + 1}",
+                    f"train_loss={mean_micro_loss:.4f}",
+                ]
+                if grad_norm is not None:
+                    console_parts.append(f"grad_norm={grad_norm:.4f}")
+                if matrix_lr is not None:
+                    console_parts.append(f"matrix_lr={matrix_lr:.6f}")
+                if vector_lr is not None:
+                    console_parts.append(f"vector_lr={vector_lr:.6f}")
+                print(" ".join(console_parts))
             else:
                 metrics["optimizer/lr"] = float(lr)
-
-            print(
-                f"step={step + 1} train_loss={mean_micro_loss:.4f}"
-                + (f" grad_norm={grad_norm:.4f}" if grad_norm is not None else "")
-            )
+                console_parts = [
+                    f"step={step + 1}",
+                    f"train_loss={mean_micro_loss:.4f}",
+                ]
+                if grad_norm is not None:
+                    console_parts.append(f"grad_norm={grad_norm:.4f}")
+                console_parts.append(f"lr={lr:.6f}")
+                print(" ".join(console_parts))
             if wandb_run is not None:
                 wandb.log({**metrics, "step": step + 1})
 
