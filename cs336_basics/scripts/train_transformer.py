@@ -577,6 +577,8 @@ def train(cfg: ExperimentConfig) -> None:
     base_lr = resolve_base_learning_rate(cfg)
     optimizer = build_optimizer(cfg, model_params, base_lr)
     setattr(optimizer, "_base_lr", base_lr)
+    for group in optimizer.param_groups:
+        group.setdefault("base_lr", group.get("lr", base_lr))
 
     grad_accum_steps = max(1, cfg.training.grad_accum_steps)
     if cfg.training.step_interval and cfg.training.step_interval > 1 and grad_accum_steps == 1:
@@ -652,8 +654,16 @@ def train(cfg: ExperimentConfig) -> None:
                     T_w=warmup_steps,
                     T_c=cosine_steps,
                 )
-            for group in optimizer.param_groups:
-                group["lr"] = lr_sched
+            if isinstance(optimizer, MuonAdamW):
+                for group in optimizer.param_groups:
+                    group_type = group.get("group_type")
+                    if group_type == "vector":
+                        group["lr"] = lr_sched
+                    else:
+                        group["lr"] = group.get("base_lr", base_lr)
+            else:
+                for group in optimizer.param_groups:
+                    group["lr"] = lr_sched
         # capture lr used for logging (vector LR if Muon, else first group)
         if isinstance(optimizer, MuonAdamW):
             vector_group = next((g for g in optimizer.param_groups if g.get("group_type") == "vector"), None)
