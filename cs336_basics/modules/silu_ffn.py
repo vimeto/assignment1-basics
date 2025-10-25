@@ -42,5 +42,6 @@ class SiLU_FFN(nn.Module):
             Output tensor of shape (..., d_model)
         """
         h = self.w1(x)
-        h = torch.sigmoid(h) * h
+        h = torch.relu(h)
+        h = h * h  # ReLU^2
         return self.w2(h)
