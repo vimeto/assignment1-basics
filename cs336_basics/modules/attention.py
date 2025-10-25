@@ -71,7 +71,8 @@ class MultiHeadAttention(nn.Module):
 
         # tiny value "residual"
         if self.v_bias is not None:
-            v = v + torch.tanh(self.v_bias_gate).unsqueeze(0).unsqueeze(2) * self.v_bias
+            gate = torch.tanh(self.v_bias_gate)
+            v = v + gate * self.v_bias.view(1, self.num_heads, 1, self.d_k)
 
         y = F.scaled_dot_product_attention(q, k, v, is_causal=True, dropout_p=0.0)
         y = rearrange(y, "b h s d -> b s (h d)")
