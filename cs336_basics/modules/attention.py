@@ -73,7 +73,7 @@ class MultiHeadAttention(nn.Module):
             k = self.rope(k, token_positions)
 
         if self.v_bias is not None:
-            gate = torch.tanh(self.v_bias_gate)
+            gate = torch.sigmoid(self.v_bias_gate)
             v = v + gate * self.v_bias.view(1, self.num_heads, 1, self.d_k)
 
         y = F.scaled_dot_product_attention(q, k, v, is_causal=True, dropout_p=0.0)
