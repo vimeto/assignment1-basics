@@ -18,7 +18,7 @@ except (ImportError, AttributeError):  # pragma: no cover
     from torch.cuda.amp import GradScaler as TorchGradScaler  # type: ignore
 
 from cs336_basics.modules.cross_entropy import cross_entropy
-from cs336_basics.modules.dataloader import dataloader
+from cs336_basics.modules.dataloader import dataloader, StridedSampler
 from cs336_basics.modules.optimizers import (
     AdamW,
     SGD,
@@ -103,7 +103,8 @@ class TrainingConfig:
     use_gradient_checkpointing: bool = False
     logit_softcap: Optional[float] = 15.0  # Gemma2-style tanh cap during TRAIN only
     z_loss_weight: float = 1e-4           # tiny Z-loss for stability
-
+    softcap_warmup_steps: int = 800
+    zloss_warmup_steps: int = 800
 
 @dataclass(frozen=True)
 class DataConfig:
@@ -640,6 +641,9 @@ def train(cfg: ExperimentConfig) -> None:
     wandb_run = maybe_init_wandb(cfg)
 
     model.train()
+    train_sampler = StridedSampler(
+        N=int(train_tokens.size - cfg.model.context_length), rng=train_rng
+    )
     for step in range(start_step, cfg.training.total_steps):
         current_step = step + 1
         if schedule_active:
@@ -709,21 +713,29 @@ def train(cfg: ExperimentConfig) -> None:
                 device=device.type,
                 rng=train_rng,
                 non_blocking=True,
+                sampler=train_sampler,
             )
 
             with autocast_scope():
                 logits = model(X)
                 if cfg.training.logit_softcap is not None and model.training:
                     t = float(cfg.training.logit_softcap)
-                    logits = torch.tanh(logits / t) * t
+                    sc_warm = max(1, int(cfg.training.softcap_warmup_steps))
+                    frac = min(1.0, current_step / sc_warm)
+                    # effective cap starts large (no-op) and converges to `t`
+                    t_eff = t / max(1e-3, frac)
+                    logits = torch.tanh(logits / t_eff) * t_eff
 
                 micro_loss = cross_entropy(
                     logits.reshape(-1, logits.size(-1)),
                     Y.reshape(-1),
                 )
                 if model.training and cfg.training.z_loss_weight > 0.0:
-                    z = torch.logsumexp(logits, dim=-1).pow(2).mean()
-                    micro_loss = micro_loss + cfg.training.z_loss_weight * z
+                    # Ramp Z-loss in sync with softcap for smooth early updates.
+                    z_warm = max(1, int(cfg.training.zloss_warmup_steps))
+                    z_frac = min(1.0, current_step / z_warm)
+                    z = torch.logsumexp(logits.float(), dim=-1).pow(2).mean()
+                    micro_loss = micro_loss + (cfg.training.z_loss_weight * z_frac) * z
                 loss = micro_loss / grad_accum_steps
 
             micro_losses.append(float(micro_loss.detach().cpu()))

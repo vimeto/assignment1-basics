@@ -1,9 +1,6 @@
 import torch
 import torch.nn as nn
 
-def _reduce_mean_sq(x: torch.Tensor) -> torch.Tensor:
-    return x.pow(2).mean(dim=-1, keepdim=True)
-
 class RMSNorm(nn.Module):
     def __init__(self, d_model: int, eps: float = 1e-5, device=None, dtype=None):
         super().__init__()
@@ -17,8 +14,6 @@ class RMSNorm(nn.Module):
         self.gi = nn.Parameter(gs)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        mean_sq = _reduce_mean_sq(x)
-        sq = torch.sqrt(mean_sq + self.eps)
-        normed = torch.mul(x, torch.reciprocal(sq))
-        out = torch.mul(normed, self.gi)
-        return torch.clone(out)
+        mean_sq = (x * x).mean(dim=-1, keepdim=True)
+        inv_rms = torch.rsqrt(mean_sq + self.eps)
+        return x * inv_rms * self.gi

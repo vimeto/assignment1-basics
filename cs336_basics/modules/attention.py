@@ -55,7 +55,7 @@ class MultiHeadAttention(nn.Module):
         # x: (B, S, d_model)
         B, S, _ = x.shape
 
-        qkv = einsum(x, self.W_qkv, "... seq d_in, d_out d_in -> ... seq d_out")
+        qkv = x.matmul(self.W_qkv.t())
         q, k, v = qkv.split(self.d_model, dim=-1)
         q = rearrange(q, "b s (h d) -> b h s d", h=self.num_heads)
         k = rearrange(k, "b s (h d) -> b h s d", h=self.num_heads)
@@ -76,5 +76,5 @@ class MultiHeadAttention(nn.Module):
 
         y = F.scaled_dot_product_attention(q, k, v, is_causal=True, dropout_p=0.0)
         y = rearrange(y, "b h s d -> b s (h d)")
-        y = einsum(y, self.W_o, "... s d_model, d_out d_model -> ... s d_out")
+        y = y.matmul(self.W_o.t())
         return y

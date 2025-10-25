@@ -20,4 +20,4 @@ class Linear(nn.Module):
         self.linear = nn.Parameter(weight)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return einsum(x, self.linear, "... in_features, out_features in_features -> ... out_features")
+        return x.matmul(self.linear.t())
