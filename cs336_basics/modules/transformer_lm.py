@@ -61,6 +61,8 @@ class TransformerLM(nn.Module):
                 nn.Parameter(torch.full((1, 1, d_model), gate_init, device=device))
                 for _ in range(num_layers)
             )
+            for gate in self.skip_gates:
+                gate._optimizer_group = "vector"
         else:
             self.skip_gates = None
         self.unet_split = num_layers // 2

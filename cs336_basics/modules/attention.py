@@ -50,6 +50,8 @@ class MultiHeadAttention(nn.Module):
 
         self.v_bias = nn.Parameter(torch.zeros(self.num_heads, self.d_k, device=device))
         self.v_bias_gate = nn.Parameter(torch.tensor(0.0, device=device))
+        self.v_bias._optimizer_group = "vector"
+        self.v_bias_gate._optimizer_group = "vector"
 
     def forward(self, x: torch.Tensor, token_positions: torch.Tensor | None = None) -> torch.Tensor:
         # x: (B, S, d_model)

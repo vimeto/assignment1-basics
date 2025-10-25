@@ -17,6 +17,7 @@ class QKNorm(nn.Module):
         super().__init__()
         self.eps = eps
         self.weight = nn.Parameter(torch.ones(dim, device=device))
+        self.weight._optimizer_group = "vector"
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         denom = torch.sqrt(torch.mean(x * x, dim=-1, keepdim=True) + self.eps)

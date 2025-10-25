@@ -37,6 +37,8 @@ class TransformerBlock(nn.Module):
         # Residual scales (LayerScale-like), start at 1.0
         self.resid_attn_scale = nn.Parameter(torch.ones(1, 1, d_model, device=device))
         self.resid_ffn_scale  = nn.Parameter(torch.ones(1, 1, d_model, device=device))
+        self.resid_attn_scale._optimizer_group = "vector"
+        self.resid_ffn_scale._optimizer_group = "vector"
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         s = x.shape[-2]
