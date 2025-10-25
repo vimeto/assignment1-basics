@@ -49,7 +49,7 @@ class MultiHeadAttention(nn.Module):
             self.k_norm = None
 
         self.v_bias = nn.Parameter(torch.zeros(self.num_heads, self.d_k, device=device, dtype=dtype))
-        self.v_bias_gate = nn.Parameter(torch.logit(torch.tensor(0.01), device=device).to(dtype))
+        self.v_bias_gate = nn.Parameter(torch.logit(torch.tensor(0.01, device=device)).to(dtype))
 
         self.v_bias._optimizer_group = "vector"
         self.v_bias_gate._optimizer_group = "vector"
