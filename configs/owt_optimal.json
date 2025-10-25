@@ -9,7 +9,7 @@
     "rope_theta": 500000.0,
     "use_qk_norm": true,
     "use_unet_residual": true,
-    "unet_gate_init": 0.18
+    "unet_gate_init": 0.01
   },
   "optimizer": {
     "name": "muon",
@@ -34,7 +34,7 @@
   "training": {
     "total_steps": 20000,
     "batch_size": 128,
-    "grad_accum_steps": 2,
+    "grad_accum_steps": 1,
     "seed": 7,
     "device": "cuda",
     "precision": "bfloat16",
@@ -73,7 +73,7 @@
     "schedule_type": "cosine",
     "alpha_max": 0.0016,
     "alpha_min": 0.0001,
-    "warmup_steps": 800,
+    "warmup_steps": 300,
     "cosine_steps": 20000
   }
 }

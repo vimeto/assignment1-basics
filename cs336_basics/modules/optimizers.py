@@ -131,8 +131,6 @@ class MuonAdamW(torch.optim.Optimizer):
                 continue
             grad = p.grad.data
             param_decay = getattr(p, "_weight_decay", weight_decay)
-            if param_decay != 0:
-                grad = grad.add(p.data, alpha=param_decay)
 
             state = self.state[p]
             step = state.get("step", 0) + 1
@@ -161,6 +159,9 @@ class MuonAdamW(torch.optim.Optimizer):
             buf.mul_(current_momentum).add_(orth)
             state["momentum_buffer"] = buf
             p.data.add_(buf, alpha=-lr)
+
+            if param_decay != 0:
+                p.data.add_(p.data, alpha=-lr * param_decay)
 
         group["effective_lr"] = lr
         group["current_momentum"] = current_momentum
