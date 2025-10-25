@@ -365,14 +365,6 @@ def build_model(cfg: ExperimentConfig, device: torch.device, dtype: torch.dtype)
     model.embedding.embedding_table._optimizer_group = "vector"
     model.ffn.linear._optimizer_group = "vector"
     model = model.to(device=device, dtype=dtype)
-
-    for name, param in model.named_parameters():
-        if not param.requires_grad:
-            continue
-        if param.ndim >= 2 and name.startswith("layers"):
-            param._weight_decay = 0.1
-        else:
-            param._weight_decay = 0.0
     return model
 
 

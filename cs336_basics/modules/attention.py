@@ -27,16 +27,17 @@ class MultiHeadAttention(nn.Module):
         self.use_rope = use_rope
         self.use_qk_norm = use_qk_norm
 
-        # QKV projection (fused)
-        # proper truncated normal: std = sqrt(2/(in+out))
         var = 2.0 / float(d_model + d_model)
         std = float(np.sqrt(var))
         w_qkv = torch.empty(3 * d_model, d_model, device=self.device)
         nn.init.trunc_normal_(w_qkv, mean=0.0, std=std, a=-3*std, b=3*std)
         self.W_qkv = nn.Parameter(w_qkv)
 
-        # Output projection: zero-init (speedrun trick, stabilizes early training)
-        w_o = torch.zeros(d_model, d_model, device=self.device)
+        # Output projection: standard truncated normal (NOT zero)
+        var_o = 2.0 / float(d_model + d_model)
+        std_o = float(np.sqrt(var_o))
+        w_o = torch.empty(d_model, d_model, device=self.device)
+        nn.init.trunc_normal_(w_o, mean=0.0, std=std_o, a=-3*std_o, b=3*std_o)
         self.W_o = nn.Parameter(w_o)
 
         # Optional QK-Norm
@@ -47,8 +48,6 @@ class MultiHeadAttention(nn.Module):
             self.q_norm = None
             self.k_norm = None
 
-        # Tiny "value embedding" mixed into V (ResFormer/SVFormer & speedrun)
-        # start closed; learn to open if helpful
         self.v_bias = nn.Parameter(torch.zeros(self.num_heads, self.d_k, device=device))
         self.v_bias_gate = nn.Parameter(torch.tensor(0.0, device=device))
 
@@ -62,22 +61,18 @@ class MultiHeadAttention(nn.Module):
         k = rearrange(k, "b s (h d) -> b h s d", h=self.num_heads)
         v = rearrange(v, "b s (h d) -> b h s d", h=self.num_heads)
 
-        # QK-Norm (before RoPE)
         if self.q_norm is not None:
             q = self.q_norm(q)
             k = self.k_norm(k)
 
-        # RoPE (after QK-Norm)
         if self.use_rope and self.rope is not None and token_positions is not None:
             q = self.rope(q, token_positions)
             k = self.rope(k, token_positions)
 
-        # Value embedding (broadcast over seq)
+        # tiny value "residual"
         if self.v_bias is not None:
-            gate = torch.tanh(self.v_bias_gate)  # scalar in [-1,1], starts at 0
-            v = v + gate * self.v_bias.unsqueeze(0).unsqueeze(2)
+            v = v + torch.tanh(self.v_bias_gate).unsqueeze(0).unsqueeze(2) * self.v_bias
 
-        # SDPA -> Flash kernels on H100
         y = F.scaled_dot_product_attention(q, k, v, is_causal=True, dropout_p=0.0)
         y = rearrange(y, "b h s d -> b s (h d)")
         y = einsum(y, self.W_o, "... s d_model, d_out d_model -> ... s d_out")
