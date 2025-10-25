@@ -54,7 +54,7 @@ class ModelConfig:
     use_pre_norm: bool = True
     use_post_norm: bool = False
     use_rmsnorm: bool = True
-    use_swiglu: bool = True
+    use_swiglu: bool = False
     use_qk_norm: bool = False
     use_unet_residual: bool = False
     unet_gate_init: float = 0.1
@@ -351,6 +351,7 @@ def build_model(cfg: ExperimentConfig, device: torch.device, dtype: torch.dtype)
         d_ff=model_cfg.d_ff,
         rope_theta=model_cfg.rope_theta,
         device=device,
+        dtype=dtype,
         use_rope=model_cfg.use_rope,
         use_pre_norm=model_cfg.use_pre_norm,
         use_post_norm=model_cfg.use_post_norm,
@@ -738,7 +739,8 @@ def train(cfg: ExperimentConfig) -> None:
                     # Ramp Z-loss in sync with softcap for smooth early updates.
                     z_warm = max(1, int(cfg.training.zloss_warmup_steps))
                     z_frac = min(1.0, current_step / z_warm)
-                    z = torch.logsumexp(logits.float(), dim=-1).pow(2).mean()
+
+                    z = torch.logsumexp(logits, dim=-1).pow(2).mean()
                     micro_loss = micro_loss + (cfg.training.z_loss_weight * z_frac) * z
                 loss = micro_loss / grad_accum_steps
 

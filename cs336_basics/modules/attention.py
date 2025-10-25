@@ -12,6 +12,7 @@ class MultiHeadAttention(nn.Module):
         d_model: int,
         num_heads: int,
         device=None,
+        dtype=None, # <-- FIX: Added dtype
         rope: RoPE | None = None,
         use_rope: bool = True,
         use_qk_norm: bool = False,
@@ -23,33 +24,33 @@ class MultiHeadAttention(nn.Module):
         self.num_heads = num_heads
         self.d_k = d_model // num_heads
         self.device = device
+        self.dtype = dtype # <-- FIX: Added dtype
         self.rope = rope
         self.use_rope = use_rope
         self.use_qk_norm = use_qk_norm
 
         var = 2.0 / float(d_model + d_model)
         std = float(np.sqrt(var))
-        w_qkv = torch.empty(3 * d_model, d_model, device=self.device)
+        w_qkv = torch.empty(3 * d_model, d_model, device=self.device, dtype=self.dtype)
         nn.init.trunc_normal_(w_qkv, mean=0.0, std=std, a=-3*std, b=3*std)
         self.W_qkv = nn.Parameter(w_qkv)
 
-        # Output projection: standard truncated normal (NOT zero)
         var_o = 2.0 / float(d_model + d_model)
         std_o = float(np.sqrt(var_o))
-        w_o = torch.empty(d_model, d_model, device=self.device)
+        w_o = torch.empty(d_model, d_model, device=self.device, dtype=self.dtype)
         nn.init.trunc_normal_(w_o, mean=0.0, std=std_o, a=-3*std_o, b=3*std_o)
         self.W_o = nn.Parameter(w_o)
 
-        # Optional QK-Norm
         if self.use_qk_norm:
-            self.q_norm = QKNorm(self.d_k, eps=qk_norm_eps, device=device)
-            self.k_norm = QKNorm(self.d_k, eps=qk_norm_eps, device=device)
+            self.q_norm = QKNorm(self.d_k, eps=qk_norm_eps, device=device, dtype=dtype)
+            self.k_norm = QKNorm(self.d_k, eps=qk_norm_eps, device=device, dtype=dtype)
         else:
             self.q_norm = None
             self.k_norm = None
 
-        self.v_bias = nn.Parameter(torch.zeros(self.num_heads, self.d_k, device=device))
-        self.v_bias_gate = nn.Parameter(torch.tensor(0.0, device=device))
+        self.v_bias = nn.Parameter(torch.zeros(self.num_heads, self.d_k, device=device, dtype=dtype))
+        self.v_bias_gate = nn.Parameter(torch.logit(torch.tensor(0.01), device=device).to(dtype))
+
         self.v_bias._optimizer_group = "vector"
         self.v_bias_gate._optimizer_group = "vector"
 
@@ -71,7 +72,6 @@ class MultiHeadAttention(nn.Module):
             q = self.rope(q, token_positions)
             k = self.rope(k, token_positions)
 
-        # tiny value "residual"
         if self.v_bias is not None:
             gate = torch.tanh(self.v_bias_gate)
             v = v + gate * self.v_bias.view(1, self.num_heads, 1, self.d_k)

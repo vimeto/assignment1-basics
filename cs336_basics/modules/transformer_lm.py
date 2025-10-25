@@ -19,6 +19,7 @@ class TransformerLM(nn.Module):
         d_ff: int,
         rope_theta: float,
         device=None,
+        dtype=None,
         use_rope: bool = True,
         use_pre_norm: bool = True,
         use_post_norm: bool = False,
@@ -41,14 +42,12 @@ class TransformerLM(nn.Module):
         self.d_k = d_model // num_heads
         self.rope = RoPE(rope_theta, self.d_k, context_length, device=device)
 
-        # Embedding + embed RMSNorm
-        self.embedding = Embedding(vocab_size, d_model, device=device)
-        self.emb_norm = RMSNorm(d_model, device=device) if use_rmsnorm else IdentityNorm(d_model)
+        self.embedding = Embedding(vocab_size, d_model, device=device, dtype=dtype)
+        self.emb_norm = RMSNorm(d_model, device=device, dtype=dtype) if use_rmsnorm else IdentityNorm(d_model)
 
-        # Blocks
         self.layers = nn.ModuleList([
             TransformerBlock(
-                d_model, num_heads, d_ff, device=device, rope=self.rope,
+                d_model, num_heads, d_ff, device=device, dtype=dtype, rope=self.rope,
                 use_rope=use_rope, use_pre_norm=use_pre_norm, use_post_norm=use_post_norm,
                 use_rmsnorm=use_rmsnorm, use_swiglu=use_swiglu, use_qk_norm=use_qk_norm,
                 layer_idx=i, num_layers=num_layers
@@ -58,7 +57,7 @@ class TransformerLM(nn.Module):
         if self.use_unet_residual:
             gate_init = float(torch.logit(torch.tensor(self.unet_gate_init))) if 0 < self.unet_gate_init < 1 else 0.0
             self.skip_gates = nn.ParameterList(
-                nn.Parameter(torch.full((1, 1, d_model), gate_init, device=device))
+                nn.Parameter(torch.full((1, 1, d_model), gate_init, device=device, dtype=dtype))
                 for _ in range(num_layers)
             )
             for gate in self.skip_gates:
@@ -67,21 +66,23 @@ class TransformerLM(nn.Module):
             self.skip_gates = None
         self.unet_split = num_layers // 2
 
-        # Final norm + untied lm head
-        self.norm = RMSNorm(d_model, device=device) if use_rmsnorm else IdentityNorm(d_model)
-        self.ffn = Linear(d_model, vocab_size, device=device)  # lm head
+        self.norm = RMSNorm(d_model, device=device, dtype=dtype) if use_rmsnorm else IdentityNorm(d_model)
+        self.ffn = Linear(d_model, vocab_size, device=device, dtype=dtype)
         self.use_gradient_checkpointing = False
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         y = self.embedding(x)
         y = self.emb_norm(y)
 
+        B, S, _ = y.shape
+        pos = torch.arange(S, device=y.device)
+
         skip_cache = {}
         for idx, block in enumerate(self.layers):
             if self.use_gradient_checkpointing and self.training and y.requires_grad:
                 y = checkpoint(block, y, use_reentrant=False)
             else:
-                y = block(y)
+                y = block(y, pos)
 
             if self.use_unet_residual and self.skip_gates is not None:
                 if idx < self.unet_split:

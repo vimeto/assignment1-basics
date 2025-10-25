@@ -12,6 +12,7 @@ class TransformerBlock(nn.Module):
         num_heads: int,
         d_ff: int,
         device=None,
+        dtype=None,
         rope=None,
         use_rope: bool = True,
         use_pre_norm: bool = True,
@@ -24,15 +25,18 @@ class TransformerBlock(nn.Module):
     ):
         super().__init__()
         norm = RMSNorm if use_rmsnorm else IdentityNorm
-        self.pre_attn_norm = norm(d_model, device=device) if use_pre_norm else IdentityNorm(d_model)
-        self.pre_ffn_norm = norm(d_model, device=device) if use_pre_norm else IdentityNorm(d_model)
-        self.post_attn_norm = norm(d_model, device=device) if use_post_norm else IdentityNorm(d_model)
-        self.post_ffn_norm = norm(d_model, device=device) if use_post_norm else IdentityNorm(d_model)
+        self.pre_attn_norm = norm(d_model, device=device, dtype=dtype) if use_pre_norm else IdentityNorm(d_model)
+        self.pre_ffn_norm = norm(d_model, device=device, dtype=dtype) if use_pre_norm else IdentityNorm(d_model)
+        self.post_attn_norm = norm(d_model, device=device, dtype=dtype) if use_post_norm else IdentityNorm(d_model)
+        self.post_ffn_norm = norm(d_model, device=device, dtype=dtype) if use_post_norm else IdentityNorm(d_model)
 
         self.attn = MultiHeadAttention(
-            d_model, num_heads, device, rope, use_rope=use_rope, use_qk_norm=use_qk_norm
+            d_model, num_heads, device, dtype=dtype, rope=rope, use_rope=use_rope, use_qk_norm=use_qk_norm
         )
-        self.ffn = SiLU_FFN(d_model, d_ff, device=device)  # ReLU²
+        if use_swiglu:
+            self.ffn = SwiGLU(d_model, d_ff, device=device, dtype=dtype)
+        else:
+            self.ffn = SiLU_FFN(d_model, d_ff, device=device, dtype=dtype)
 
         # Residual scales (LayerScale-like), start at 1.0
         self.resid_attn_scale = nn.Parameter(torch.ones(1, 1, d_model, device=device))
@@ -40,10 +44,7 @@ class TransformerBlock(nn.Module):
         self.resid_attn_scale._optimizer_group = "vector"
         self.resid_ffn_scale._optimizer_group = "vector"
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        s = x.shape[-2]
-        pos = torch.arange(s, device=x.device)
-
+    def forward(self, x: torch.Tensor, pos: torch.Tensor) -> torch.Tensor:
         a_out = self.attn(self.pre_attn_norm(x), pos)
         a_out = self.post_attn_norm(a_out)
         y = x + a_out * self.resid_attn_scale
