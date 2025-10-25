@@ -8,6 +8,7 @@ from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, Tuple
+import torch.compiler
 
 import numpy as np
 import torch
@@ -715,6 +716,9 @@ def train(cfg: ExperimentConfig) -> None:
                 non_blocking=True,
                 sampler=train_sampler,
             )
+
+            if grad_accum_steps > 1 and use_compile:
+                torch.compiler.cudagraph_mark_step_begin()
 
             with autocast_scope():
                 logits = model(X)
