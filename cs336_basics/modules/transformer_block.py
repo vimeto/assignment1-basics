@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from .attention import MultiHeadAttention
 from .rms_norm import RMSNorm
 from .identity_norm import IdentityNorm
@@ -54,7 +55,7 @@ class TransformerBlock(nn.Module):
         a_in = self.pre_attn_norm(x)
         a_out = self.attn(a_in, pos)
         # gated attention
-        gate = torch.silu(self.attn_gate(a_in))
+        gate = F.silu(self.attn_gate(a_in))
         a_out = a_out * gate
         a_out = self.post_attn_norm(a_out)
         y = x + a_out * self.resid_attn_scale
