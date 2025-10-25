@@ -58,6 +58,8 @@ class ModelConfig:
     use_qk_norm: bool = False
     use_unet_residual: bool = False
     unet_gate_init: float = 0.1
+    use_x0_mixin: bool = False
+    x0_gate_init: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -360,6 +362,8 @@ def build_model(cfg: ExperimentConfig, device: torch.device, dtype: torch.dtype)
         use_qk_norm=model_cfg.use_qk_norm,
         use_unet_residual=model_cfg.use_unet_residual,
         unet_gate_init=model_cfg.unet_gate_init,
+        use_x0_mixin=model_cfg.use_x0_mixin,
+        x0_gate_init=model_cfg.x0_gate_init,
     )
     if isinstance(model.layers, list):
         model.layers = torch.nn.ModuleList(model.layers)  # type: ignore[attr-defined]
