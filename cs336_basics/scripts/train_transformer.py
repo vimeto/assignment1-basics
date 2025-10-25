@@ -60,6 +60,7 @@ class ModelConfig:
     unet_gate_init: float = 0.1
     use_x0_mixin: bool = False
     x0_gate_init: float = 0.0
+    tie_embeddings: bool = False
 
 
 @dataclass(frozen=True)
@@ -364,6 +365,7 @@ def build_model(cfg: ExperimentConfig, device: torch.device, dtype: torch.dtype)
         unet_gate_init=model_cfg.unet_gate_init,
         use_x0_mixin=model_cfg.use_x0_mixin,
         x0_gate_init=model_cfg.x0_gate_init,
+        tie_embeddings=model_cfg.tie_embeddings,
     )
     if isinstance(model.layers, list):
         model.layers = torch.nn.ModuleList(model.layers)  # type: ignore[attr-defined]
