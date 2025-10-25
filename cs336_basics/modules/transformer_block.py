@@ -1,9 +1,11 @@
+import math
 import torch
 import torch.nn as nn
 from .attention import MultiHeadAttention
 from .rms_norm import RMSNorm
 from .identity_norm import IdentityNorm
-from .silu_ffn import SiLU_FFN  # now ReLU²
+from .silu_ffn import SiLU_FFN  # ReLU² MLP
+from .swiglu import SwiGLU
 
 class TransformerBlock(nn.Module):
     def __init__(
@@ -38,9 +40,10 @@ class TransformerBlock(nn.Module):
         else:
             self.ffn = SiLU_FFN(d_model, d_ff, device=device, dtype=dtype)
 
-        # Residual scales (LayerScale-like), start at 1.0
-        self.resid_attn_scale = nn.Parameter(torch.ones(1, 1, d_model, device=device))
-        self.resid_ffn_scale  = nn.Parameter(torch.ones(1, 1, d_model, device=device))
+        # Residual scales (LayerScale-like) near 1/sqrt(2L)
+        init = 1.0 / math.sqrt(max(1, 2 * num_layers))
+        self.resid_attn_scale = nn.Parameter(torch.full((1, 1, d_model), init, device=device))
+        self.resid_ffn_scale  = nn.Parameter(torch.full((1, 1, d_model), init, device=device))
         self.resid_attn_scale._optimizer_group = "vector"
         self.resid_ffn_scale._optimizer_group = "vector"
 

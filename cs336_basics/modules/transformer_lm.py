@@ -3,7 +3,7 @@ import torch.nn as nn
 from torch.utils.checkpoint import checkpoint
 from .transformer_block import TransformerBlock
 from .embedding import Embedding
-from .rms_norm import RMSNorm, nn as _nn  # keep import style consistent if needed
+from .rms_norm import RMSNorm
 from .identity_norm import IdentityNorm
 from .linear import Linear
 from .rope import RoPE
@@ -28,6 +28,9 @@ class TransformerLM(nn.Module):
         use_qk_norm: bool = True,
         use_unet_residual: bool = True,
         unet_gate_init: float = 0.1,
+        tie_embeddings: bool = True,
+        use_x0_mixin: bool = True,
+        x0_gate_init: float = 0.1,
     ):
         super().__init__()
         self.vocab_size = vocab_size
@@ -38,9 +41,11 @@ class TransformerLM(nn.Module):
         self.d_ff = d_ff
         self.use_unet_residual = use_unet_residual and num_layers >= 2
         self.unet_gate_init = float(unet_gate_init)
+        self.tie_embeddings = tie_embeddings
+        self.use_x0_mixin = use_x0_mixin
 
         self.d_k = d_model // num_heads
-        self.rope = RoPE(rope_theta, self.d_k, context_length, device=device)
+        self.rope = RoPE(rope_theta, self.d_k, context_length, device=device, dtype=dtype)
 
         self.embedding = Embedding(vocab_size, d_model, device=device, dtype=dtype)
         self.emb_norm = RMSNorm(d_model, device=device, dtype=dtype) if use_rmsnorm else IdentityNorm(d_model)
@@ -66,21 +71,39 @@ class TransformerLM(nn.Module):
             self.skip_gates = None
         self.unet_split = num_layers // 2
 
+        if self.use_x0_mixin:
+            gate_init = float(torch.logit(torch.tensor(x0_gate_init))) if 0 < x0_gate_init < 1 else 0.0
+            self.x0_gates = nn.ParameterList(
+                nn.Parameter(torch.full((1, 1, d_model), gate_init, device=device, dtype=dtype))
+                for _ in range(num_layers)
+            )
+            for gate in self.x0_gates:
+                gate._optimizer_group = "vector"
+        else:
+            self.x0_gates = None
+
         self.norm = RMSNorm(d_model, device=device, dtype=dtype) if use_rmsnorm else IdentityNorm(d_model)
-        self.ffn = Linear(d_model, vocab_size, device=device, dtype=dtype)
+        if self.tie_embeddings:
+            self.lm_head_weight = self.embedding.embedding_table
+        else:
+            self.ffn = Linear(d_model, vocab_size, device=device, dtype=dtype)
         self.use_gradient_checkpointing = False
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         y = self.embedding(x)
         y = self.emb_norm(y)
+        x0 = y
 
         B, S, _ = y.shape
         pos = torch.arange(S, device=y.device)
 
         skip_cache = {}
         for idx, block in enumerate(self.layers):
+            if self.use_x0_mixin and self.x0_gates is not None:
+                gate = torch.sigmoid(self.x0_gates[idx])
+                y = gate * x0 + (1 - gate) * y
             if self.use_gradient_checkpointing and self.training and y.requires_grad:
-                y = checkpoint(block, y, use_reentrant=False)
+                y = checkpoint(lambda _y, _pos: block(_y, _pos), y, pos, use_reentrant=False)
             else:
                 y = block(y, pos)
 
@@ -94,5 +117,8 @@ class TransformerLM(nn.Module):
                         y = gate * skip_cache[mirror] + (1 - gate) * y
 
         y = self.norm(y)
-        y = self.ffn(y)
-        return y
+        if self.tie_embeddings:
+            logits = y.matmul(self.lm_head_weight.t())
+        else:
+            logits = self.ffn(y)
+        return logits

@@ -3,21 +3,21 @@ import torch.nn as nn
 from einops import rearrange
 
 class RoPE(nn.Module):
-    def __init__(self, theta: float, d_k: int, max_seq_len: int, device=None):
+    def __init__(self, theta: float, d_k: int, max_seq_len: int, device=None, dtype=None):
         super().__init__()
 
         self.d_k = d_k
         self.theta = theta
         self.max_seq_len = max_seq_len
         self.device = device
+        self.base_dtype = torch.float32
 
         i_s = torch.arange(max_seq_len, device=device).unsqueeze(1)
         k_s = torch.arange(d_k // 2, device=device).unsqueeze(0)
 
         thetas = i_s / (theta ** (2 * k_s / self.d_k))
-        # the shape of these are (max_seq_length, d // 2)
-        sin = torch.sin(thetas)
-        cos = torch.cos(thetas)
+        sin = torch.sin(thetas).to(self.base_dtype)
+        cos = torch.cos(thetas).to(self.base_dtype)
 
         self.register_buffer("sin", sin, persistent=False)
         self.register_buffer("cos", cos, persistent=False)
@@ -37,8 +37,9 @@ class RoPE(nn.Module):
             raise ValueError(f"RoPE received NaN or Inf in input x")
 
         # shape (batch, seq_len, d_k // 2)
-        chosen_sin = self.sin[token_positions]
-        chosen_cos = self.cos[token_positions]
+        token_positions = token_positions.to(torch.long)
+        chosen_sin = self.sin[token_positions].to(x.dtype)
+        chosen_cos = self.cos[token_positions].to(x.dtype)
 
         pairs = rearrange(x, "... seq_len (pairs two) -> ... seq_len pairs two", two=2)
         # shape (batch, seq_len, d_k // 2)

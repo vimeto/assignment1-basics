@@ -126,6 +126,7 @@ class MuonAdamW(torch.optim.Optimizer):
         ns_steps = group.get("ns_steps", 5)
         eps = group.get("eps", 1e-7)
 
+        current_momentum = momentum
         for p in group["params"]:
             if p.grad is None:
                 continue
@@ -145,10 +146,11 @@ class MuonAdamW(torch.optim.Optimizer):
 
             orth = zeroth_power_via_newtonschulz5(matrix, steps=ns_steps, eps=eps)
             orth = orth.reshape(reshape_back)
+            orth32 = orth.to(torch.float32)
 
             buf = state.get("momentum_buffer")
             if buf is None:
-                buf = torch.zeros_like(p.data)
+                buf = torch.zeros_like(p.data, dtype=torch.float32)
 
             if momentum_min is not None and warmup_steps > 0 and step <= warmup_steps:
                 t = step / warmup_steps
@@ -156,9 +158,9 @@ class MuonAdamW(torch.optim.Optimizer):
             else:
                 current_momentum = momentum_max
 
-            buf.mul_(current_momentum).add_(orth)
+            buf.mul_(current_momentum).add_(orth32)
             state["momentum_buffer"] = buf
-            p.data.add_(buf, alpha=-lr)
+            p.data.add_(buf.to(p.data.dtype), alpha=-lr)
 
             if param_decay != 0:
                 p.data.add_(p.data, alpha=-lr * param_decay)
@@ -184,21 +186,23 @@ class MuonAdamW(torch.optim.Optimizer):
             exp_avg = state.get("exp_avg")
             exp_avg_sq = state.get("exp_avg_sq")
             if exp_avg is None:
-                exp_avg = torch.zeros_like(p.data)
-                exp_avg_sq = torch.zeros_like(p.data)
+                exp_avg = torch.zeros_like(p.data, dtype=torch.float32)
+                exp_avg_sq = torch.zeros_like(p.data, dtype=torch.float32)
 
             step = state.get("step", 0) + 1
             state["step"] = step
 
-            exp_avg.mul_(beta1).add_(grad, alpha=1 - beta1)
-            exp_avg_sq.mul_(beta2).addcmul_(grad, grad, value=1 - beta2)
+            grad32 = grad.to(torch.float32)
+            exp_avg.mul_(beta1).add_(grad32, alpha=1 - beta1)
+            exp_avg_sq.mul_(beta2).addcmul_(grad32, grad32, value=1 - beta2)
 
             denom = exp_avg_sq.sqrt().add_(eps)
             bias_correction1 = 1 - beta1 ** step
             bias_correction2 = 1 - beta2 ** step
             step_size = lr * math.sqrt(bias_correction2) / bias_correction1
 
-            p.data.addcdiv_(exp_avg, denom, value=-step_size)
+            update = (exp_avg / denom).to(p.data.dtype)
+            p.data.add_(update, alpha=-step_size)
 
             state["exp_avg"] = exp_avg
             state["exp_avg_sq"] = exp_avg_sq
@@ -281,22 +285,26 @@ class AdamW(torch.optim.Optimizer):
             for i, p in enumerate(group["params"]):
                 if p.grad is None:
                     continue
-                state = self.state[p] # Get state associated with p.
-                t = state.get("t", 1) # Get iteration number from the state, or initial value.
-                m = state.get("m", torch.zeros_like(p, dtype=dtype))
-                v = state.get("v", torch.zeros_like(p, dtype=dtype))
-                grad = p.grad.data # Get the gradient of loss with respect to p.
+                state = self.state[p]
+                t = state.get("t", 0) + 1
+                if "m" not in state:
+                    state["m"] = torch.zeros_like(p.data, dtype=torch.float32)
+                    state["v"] = torch.zeros_like(p.data, dtype=torch.float32)
+                m = state["m"]
+                v = state["v"]
+                grad = p.grad.data
+                g32 = grad.to(torch.float32)
 
-                m = b1 * m + (1 - b1) * grad
-                v = b2 * v + (1 - b2) * (grad ** 2)
+                m.mul_(b1).add_(g32, alpha=1 - b1)
+                v.mul_(b2).addcmul_(g32, g32, value=1 - b2)
 
-                a_t = lr  * math.sqrt(1 - (b2 ** t)) / (1 - (b1 ** t))
-                p.data -= a_t * m / (torch.sqrt(v) + eps)
-                p.data -= lr * weight_decay * p.data
+                a_t = lr * math.sqrt(1 - (b2 ** t)) / (1 - (b1 ** t))
+                denom = v.sqrt().add_(eps)
+                update = (m / denom).to(p.data.dtype)
+                p.data.add_(update, alpha=-a_t)
+                p.data.add_(p.data, alpha=-lr * weight_decay)
 
-                state["t"] = t + 1 # Increment iteration number.
-                state["m"] = m
-                state["v"] = v
+                state["t"] = t
         return loss
 
 
