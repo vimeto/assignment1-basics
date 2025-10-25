@@ -101,6 +101,8 @@ class TrainingConfig:
     use_torch_compile: bool = False
     compile_mode: str = "reduce-overhead"
     use_gradient_checkpointing: bool = False
+    logit_softcap: Optional[float] = 15.0  # Gemma2-style tanh cap during TRAIN only
+    z_loss_weight: float = 1e-4           # tiny Z-loss for stability
 
 
 @dataclass(frozen=True)
@@ -361,6 +363,7 @@ def build_model(cfg: ExperimentConfig, device: torch.device, dtype: torch.dtype)
 
     # mark embeddings for vector optimizer treatment when using Muon
     model.embedding.embedding_table._optimizer_group = "vector"
+    model.ffn.linear._optimizer_group = "vector"
     model = model.to(device=device, dtype=dtype)
 
     for name, param in model.named_parameters():
@@ -572,20 +575,14 @@ def train(cfg: ExperimentConfig) -> None:
 
     compile_available = hasattr(torch, "compile")
     use_compile = cfg.training.use_torch_compile
-    if use_compile and cfg.training.grad_accum_steps > 1:
-        print(
-            "torch.compile is disabled because grad_accum_steps>1 is requested; "
-            "re-enable once accumulation is compile-safe."
-        )
+    if use_compile and not compile_available:
+        print("torch.compile requested but not available; continuing without it.")
         use_compile = False
-
-    if use_compile and compile_available:
+    if use_compile:
         compile_kwargs: dict[str, Any] = {}
         if cfg.training.compile_mode:
             compile_kwargs["mode"] = cfg.training.compile_mode
         model = torch.compile(model, **compile_kwargs)
-    elif use_compile and not compile_available:
-        print("torch.compile requested but not available in this PyTorch build; continuing without it.")
 
     model_params = list(model.parameters())
     base_lr = resolve_base_learning_rate(cfg)
@@ -724,10 +721,17 @@ def train(cfg: ExperimentConfig) -> None:
 
             with autocast_scope():
                 logits = model(X)
+                if cfg.training.logit_softcap is not None and model.training:
+                    t = float(cfg.training.logit_softcap)
+                    logits = torch.tanh(logits / t) * t
+
                 micro_loss = cross_entropy(
                     logits.reshape(-1, logits.size(-1)),
                     Y.reshape(-1),
                 )
+                if model.training and cfg.training.z_loss_weight > 0.0:
+                    z = torch.logsumexp(logits, dim=-1).pow(2).mean()
+                    micro_loss = micro_loss + cfg.training.z_loss_weight * z
                 loss = micro_loss / grad_accum_steps
 
             micro_losses.append(float(micro_loss.detach().cpu()))
