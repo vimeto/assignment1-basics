@@ -21,12 +21,12 @@
   },
   "optimizer": {
     "name": "muon",
-    "lr": 0.003,
+    "lr": 0.002,
     "betas": [0.9, 0.999],
     "eps": 1e-8,
-    "weight_decay": 0.1,
+    "weight_decay": 0.15,
     "matrix_weight_decay": 0.01,
-    "vector_weight_decay": 0.1,
+    "vector_weight_decay": 0.15,
     "vector_lr_multiplier": 1.0,
     "muon_momentum": 0.95,
     "muon_momentum_min": 0.90,
@@ -34,7 +34,7 @@
     "muon_warmup_steps": 1000,
     "muon_ns_steps": 5,
     "matrix_base_lr": 0.02,
-    "vector_base_lr": 0.003,
+    "vector_base_lr": 0.002,
     "muon_lr_decay_start": null,
     "muon_lr_decay_end": null,
     "muon_lr_final": null
@@ -79,8 +79,8 @@
   "lr_schedule": {
     "enabled": true,
     "schedule_type": "cosine",
-    "alpha_max": 0.003,
-    "alpha_min": 0.0003,
+    "alpha_max": 0.002,
+    "alpha_min": 0.0002,
     "warmup_steps": 1000,
     "cosine_steps": 18000
   }

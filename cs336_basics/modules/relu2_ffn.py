@@ -30,8 +30,7 @@ class ReLU2_FFN(nn.Module):
 
         self.w1 = Linear(d_model, d_ff, device, dtype)
         self.w2 = Linear(d_ff, d_model, device, dtype)
-        with torch.no_grad():
-            self.w2.linear.zero_()
+        nn.init.zeros_(self.w2.linear)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
