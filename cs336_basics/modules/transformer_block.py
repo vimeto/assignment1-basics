@@ -4,7 +4,7 @@ import torch.nn as nn
 from .attention import MultiHeadAttention
 from .rms_norm import RMSNorm
 from .identity_norm import IdentityNorm
-from .silu_ffn import SiLU_FFN  # ReLU² MLP
+from .relu2_ffn import ReLU2_FFN
 from .swiglu import SwiGLU
 
 class TransformerBlock(nn.Module):
@@ -38,7 +38,10 @@ class TransformerBlock(nn.Module):
         if use_swiglu:
             self.ffn = SwiGLU(d_model, d_ff, device=device, dtype=dtype)
         else:
-            self.ffn = SiLU_FFN(d_model, d_ff, device=device, dtype=dtype)
+            self.ffn = ReLU2_FFN(d_model, d_ff, device=device, dtype=dtype)
+
+        depth = max(1, layer_idx + 1)
+        self.lns_scale = float(1.0 / math.sqrt(depth))
 
         # Residual scales (LayerScale-like) near 1/sqrt(2L)
         init = 1.0 / math.sqrt(max(1, 2 * num_layers))
@@ -48,11 +51,11 @@ class TransformerBlock(nn.Module):
         self.resid_ffn_scale._optimizer_group = "vector"
 
     def forward(self, x: torch.Tensor, pos: torch.Tensor) -> torch.Tensor:
-        a_out = self.attn(self.pre_attn_norm(x), pos)
+        a_out = self.attn(self.pre_attn_norm(x) * self.lns_scale, pos)
         a_out = self.post_attn_norm(a_out)
         y = x + a_out * self.resid_attn_scale
 
-        f_out = self.ffn(self.pre_ffn_norm(y))
+        f_out = self.ffn(self.pre_ffn_norm(y) * self.lns_scale)
         f_out = self.post_ffn_norm(f_out)
         y = y + f_out * self.resid_ffn_scale
         return y

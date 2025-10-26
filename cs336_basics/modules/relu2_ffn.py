@@ -8,7 +8,7 @@ import torch.nn as nn
 from .linear import Linear
 
 
-class SiLU_FFN(nn.Module):
+class ReLU2_FFN(nn.Module):
     """
     Standard two-layer feed-forward network with SiLU activation.
 
@@ -30,6 +30,8 @@ class SiLU_FFN(nn.Module):
 
         self.w1 = Linear(d_model, d_ff, device, dtype)
         self.w2 = Linear(d_ff, d_model, device, dtype)
+        with torch.no_grad():
+            self.w2.linear.zero_()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """

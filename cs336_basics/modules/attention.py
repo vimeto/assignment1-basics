@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import math
 from einops import rearrange, einsum
 import numpy as np
 from .rope import RoPE
@@ -35,18 +36,20 @@ class MultiHeadAttention(nn.Module):
         nn.init.trunc_normal_(w_qkv, mean=0.0, std=std, a=-3*std, b=3*std)
         self.W_qkv = nn.Parameter(w_qkv)
 
-        var_o = 2.0 / float(d_model + d_model)
-        std_o = float(np.sqrt(var_o))
-        w_o = torch.empty(d_model, d_model, device=self.device, dtype=self.dtype)
-        nn.init.trunc_normal_(w_o, mean=0.0, std=std_o, a=-3*std_o, b=3*std_o)
+        w_o = torch.zeros(d_model, d_model, device=self.device, dtype=self.dtype)
         self.W_o = nn.Parameter(w_o)
 
         if self.use_qk_norm:
             self.q_norm = QKNorm(self.d_k, eps=qk_norm_eps, device=device, dtype=dtype)
             self.k_norm = QKNorm(self.d_k, eps=qk_norm_eps, device=device, dtype=dtype)
+            self.qk_logit_scale = nn.Parameter(
+                torch.ones(self.num_heads, 1, 1, device=device, dtype=dtype)
+            )
+            self.qk_logit_scale._optimizer_group = "vector"
         else:
             self.q_norm = None
             self.k_norm = None
+            self.qk_logit_scale = None
 
         self.v_bias = nn.Parameter(torch.zeros(self.num_heads, self.d_k, device=device, dtype=dtype))
         self.v_bias_gate = nn.Parameter(torch.logit(torch.tensor(0.01, device=device)).to(dtype))
@@ -76,7 +79,12 @@ class MultiHeadAttention(nn.Module):
             gate = torch.sigmoid(self.v_bias_gate)
             v = v + gate * self.v_bias.view(1, self.num_heads, 1, self.d_k)
 
-        y = F.scaled_dot_product_attention(q, k, v, is_causal=True, dropout_p=0.0)
+        if self.qk_logit_scale is not None:
+            q = q * self.qk_logit_scale.view(1, self.num_heads, 1, 1)
+            y = F.scaled_dot_product_attention(q, k, v, is_causal=True, dropout_p=0.0, scale=1.0)
+        else:
+            y = F.scaled_dot_product_attention(q, k, v, is_causal=True, dropout_p=0.0)
+
         y = rearrange(y, "b h s d -> b s (h d)")
         y = y.matmul(self.W_o.t())
         return y

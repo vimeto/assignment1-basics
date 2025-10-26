@@ -179,8 +179,6 @@ class MuonAdamW(torch.optim.Optimizer):
                 continue
             grad = p.grad.data
             param_decay = getattr(p, "_weight_decay", weight_decay)
-            if param_decay != 0:
-                grad = grad.add(p.data, alpha=param_decay)
 
             state = self.state[p]
             exp_avg = state.get("exp_avg")
@@ -203,6 +201,9 @@ class MuonAdamW(torch.optim.Optimizer):
 
             update = (exp_avg / denom).to(p.data.dtype)
             p.data.add_(update, alpha=-step_size)
+
+            if param_decay != 0:
+                p.data.add_(p.data, alpha=-lr * param_decay)
 
             state["exp_avg"] = exp_avg
             state["exp_avg_sq"] = exp_avg_sq
