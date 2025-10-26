@@ -12,6 +12,11 @@ import torch.compiler
 
 import numpy as np
 import torch
+import torch.backends.cuda
+
+torch.set_float32_matmul_precision("high")
+if torch.cuda.is_available():
+    torch.backends.cuda.matmul.allow_tf32 = True
 
 try:
     from torch.amp import GradScaler as TorchGradScaler  # type: ignore[attr-defined]

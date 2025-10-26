@@ -40,10 +40,24 @@ class MultiHeadAttention(nn.Module):
         self.W_o = nn.Parameter(w_o)
 
         if self.use_qk_norm:
-            self.q_norm = QKNorm(self.d_k, eps=qk_norm_eps, device=device, dtype=dtype)
-            self.k_norm = QKNorm(self.d_k, eps=qk_norm_eps, device=device, dtype=dtype)
+            self.q_norm = QKNorm(
+                self.d_k,
+                eps=qk_norm_eps,
+                device=device,
+                dtype=dtype,
+                num_heads=self.num_heads,
+            )
+            self.k_norm = QKNorm(
+                self.d_k,
+                eps=qk_norm_eps,
+                device=device,
+                dtype=dtype,
+                num_heads=self.num_heads,
+            )
+            # QK-Norm replaces 1/sqrt(d_k) with a learnable scale. Start at that default.
+            init_scale = 1.0 / math.sqrt(self.d_k)
             self.qk_logit_scale = nn.Parameter(
-                torch.ones(self.num_heads, 1, 1, device=device, dtype=dtype)
+                torch.full((self.num_heads, 1, 1), init_scale, device=device, dtype=dtype)
             )
             self.qk_logit_scale._optimizer_group = "vector"
         else:
@@ -80,9 +94,11 @@ class MultiHeadAttention(nn.Module):
             v = v + gate * self.v_bias.view(1, self.num_heads, 1, self.d_k)
 
         if self.qk_logit_scale is not None:
+            # We provide our own scale (initialized to 1/sqrt(d_k)), so keep torch's scale at 1.0.
             q = q * self.qk_logit_scale.view(1, self.num_heads, 1, 1)
             y = F.scaled_dot_product_attention(q, k, v, is_causal=True, dropout_p=0.0, scale=1.0)
         else:
+            # Fall back to PyTorch's default 1/sqrt(d_k) scaling.
             y = F.scaled_dot_product_attention(q, k, v, is_causal=True, dropout_p=0.0)
 
         y = rearrange(y, "b h s d -> b s (h d)")
