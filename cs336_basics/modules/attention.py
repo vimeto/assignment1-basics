@@ -60,6 +60,7 @@ class MultiHeadAttention(nn.Module):
                 torch.full((self.num_heads, 1, 1), init_scale, device=device, dtype=dtype)
             )
             self.qk_logit_scale._optimizer_group = "vector"
+            self.qk_logit_scale._weight_decay = 0.0
         else:
             self.q_norm = None
             self.k_norm = None
@@ -70,6 +71,8 @@ class MultiHeadAttention(nn.Module):
 
         self.v_bias._optimizer_group = "vector"
         self.v_bias_gate._optimizer_group = "vector"
+        self.v_bias._weight_decay = 0.0
+        self.v_bias_gate._weight_decay = 0.0
 
     def forward(self, x: torch.Tensor, token_positions: torch.Tensor | None = None) -> torch.Tensor:
         # x: (B, S, d_model)

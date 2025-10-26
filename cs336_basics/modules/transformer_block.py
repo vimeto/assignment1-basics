@@ -41,7 +41,7 @@ class TransformerBlock(nn.Module):
             self.ffn = ReLU2_FFN(d_model, d_ff, device=device, dtype=dtype)
 
         depth = max(1, layer_idx + 1)
-        self.lns_scale = float(1.0 / math.sqrt(depth))
+        self.lns_scale = 1.0
 
         # Residual scales (LayerScale-like) near 1/sqrt(2L)
         init = 1.0 / math.sqrt(max(1, 2 * num_layers))
@@ -49,6 +49,8 @@ class TransformerBlock(nn.Module):
         self.resid_ffn_scale  = nn.Parameter(torch.full((1, 1, d_model), init, device=device))
         self.resid_attn_scale._optimizer_group = "vector"
         self.resid_ffn_scale._optimizer_group = "vector"
+        self.resid_attn_scale._weight_decay = 0.0
+        self.resid_ffn_scale._weight_decay = 0.0
 
     def forward(self, x: torch.Tensor, pos: torch.Tensor) -> torch.Tensor:
         a_out = self.attn(self.pre_attn_norm(x) * self.lns_scale, pos)

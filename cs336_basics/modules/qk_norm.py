@@ -23,6 +23,7 @@ class QKNorm(nn.Module):
         shape = (num_heads, dim) if num_heads is not None else (dim,)
         self.weight = nn.Parameter(torch.ones(shape, device=device, dtype=dtype))
         self.weight._optimizer_group = "vector"
+        self.weight._weight_decay = 0.0
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # x: (B, H, S, D)
