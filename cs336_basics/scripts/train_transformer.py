@@ -91,6 +91,9 @@ class OptimizerConfig:
     vector_base_lr: float | None = None
     muon_lr_decay_start: int | None = None
     muon_lr_decay_end: int | None = None
+    # token-aware decay for Muon matrices (overrides step-based if set)
+    muon_lr_decay_start_tokens: int | None = None
+    muon_lr_decay_end_tokens: int | None = None
     muon_lr_final: float | None = None
 
 
@@ -150,6 +153,7 @@ class LearningRateScheduleConfig:
     schedule_type: str = "cosine"
     warmup_tokens: int | None = None
     decay_tokens: int | None = None
+    cosine_tokens: int | None = None  # optional: set total cosine span in tokens
 
 
 @dataclass(frozen=True)
@@ -623,7 +627,11 @@ def train(cfg: ExperimentConfig) -> None:
         else:
             alpha_max = schedule_cfg.alpha_max if schedule_cfg.alpha_max is not None else base_lr
             alpha_min = schedule_cfg.alpha_min if schedule_cfg.alpha_min is not None else alpha_max
-            cosine_steps = schedule_cfg.cosine_steps if schedule_cfg.cosine_steps is not None else cfg.training.total_steps
+            cosine_steps = (schedule_cfg.cosine_steps
+                            if schedule_cfg.cosine_steps is not None
+                            else cfg.training.total_steps)
+            if schedule_cfg.cosine_tokens is not None:
+                cosine_steps = max(1, math.ceil(schedule_cfg.cosine_tokens / tokens_per_step))
             if cosine_steps <= warmup_steps:
                 raise ValueError("lr_schedule.cosine_steps must be greater than lr_schedule.warmup_steps")
     else:
@@ -684,7 +692,16 @@ def train(cfg: ExperimentConfig) -> None:
             matrix_base_lr = getattr(optimizer, "_matrix_base_lr", base_lr)
             vector_base_lr = getattr(optimizer, "_vector_base_lr", base_lr)
             decay_start = opt_cfg.muon_lr_decay_start
-            decay_end = opt_cfg.muon_lr_decay_end if opt_cfg.muon_lr_decay_end is not None else cfg.training.total_steps
+            decay_end = (opt_cfg.muon_lr_decay_end
+                         if opt_cfg.muon_lr_decay_end is not None
+                         else cfg.training.total_steps)
+            if opt_cfg.muon_lr_decay_start_tokens is not None:
+                decay_start = max(1, math.ceil(opt_cfg.muon_lr_decay_start_tokens / tokens_per_step))
+            if opt_cfg.muon_lr_decay_end_tokens is not None:
+                decay_end = max(
+                    decay_start + 1,
+                    math.ceil(opt_cfg.muon_lr_decay_end_tokens / tokens_per_step),
+                )
             final_matrix_lr = opt_cfg.muon_lr_final if opt_cfg.muon_lr_final is not None else matrix_base_lr
             for group in optimizer.param_groups:
                 gtype = group.get("group_type")
