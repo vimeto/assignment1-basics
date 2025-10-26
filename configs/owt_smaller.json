@@ -21,23 +21,23 @@
   },
   "optimizer": {
     "name": "muon",
-    "lr": 0.001,
+    "lr": 0.003,
     "betas": [0.9, 0.999],
     "eps": 1e-8,
-    "weight_decay": 0.001,
-    "matrix_weight_decay": 0.001,
-    "vector_weight_decay": 0.0,
-    "vector_lr_multiplier": 1.5,
+    "weight_decay": 0.1,
+    "matrix_weight_decay": 0.01,
+    "vector_weight_decay": 0.1,
+    "vector_lr_multiplier": 1.0,
     "muon_momentum": 0.95,
     "muon_momentum_min": 0.90,
     "muon_momentum_max": 0.95,
-    "muon_warmup_steps": 300,
+    "muon_warmup_steps": 1000,
     "muon_ns_steps": 5,
-    "matrix_base_lr": 0.0175,
-    "vector_base_lr": 0.001,
-    "muon_lr_decay_start": 1000,
-    "muon_lr_decay_end": 10000,
-    "muon_lr_final": 0.004
+    "matrix_base_lr": 0.02,
+    "vector_base_lr": 0.003,
+    "muon_lr_decay_start": null,
+    "muon_lr_decay_end": null,
+    "muon_lr_final": null
   },
   "training": {
     "total_steps": 20000,
@@ -56,8 +56,8 @@
     "use_gradient_checkpointing": false,
     "logit_softcap": 15.0,
     "z_loss_weight": 1e-4,
-    "softcap_warmup_steps": 400,
-    "zloss_warmup_steps": 400
+    "softcap_warmup_steps": 1000,
+    "zloss_warmup_steps": 1000
   },
   "data": {
     "train_path": "/data0/data1/owt_train.npy",
@@ -79,9 +79,9 @@
   "lr_schedule": {
     "enabled": true,
     "schedule_type": "cosine",
-    "alpha_max": 0.001,
-    "alpha_min": 0.0002,
-    "warmup_steps": 200,
-    "cosine_steps": 9000
+    "alpha_max": 0.003,
+    "alpha_min": 0.0003,
+    "warmup_steps": 1000,
+    "cosine_steps": 18000
   }
 }
