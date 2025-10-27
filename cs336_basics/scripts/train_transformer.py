@@ -119,6 +119,10 @@ class TrainingConfig:
     z_loss_weight: float = 1e-4           # tiny Z-loss for stability
     softcap_warmup_steps: int = 800
     zloss_warmup_steps: int = 800
+    # DataLoader controls
+    num_workers: int = 2
+    pin_memory: bool = True
+    persistent_workers: bool = False
 
 @dataclass(frozen=True)
 class DataConfig:
@@ -534,8 +538,8 @@ def evaluate(
     # Sample exactly eval_batches * eval_batch_size items at random with replacement
     num_samples = int(eval_batch_size) * int(cfg.training.eval_batches)
     sampler = RandomSampler(ds, replacement=True, num_samples=num_samples)
-    pin = device.type == "cuda"
-    num_workers = 4
+    pin = device.type == "cuda" and bool(cfg.training.pin_memory)
+    num_workers = max(0, int(min(cfg.training.num_workers, (os.cpu_count() or cfg.training.num_workers))))
     loader = DataLoader(
         ds,
         batch_size=eval_batch_size,
@@ -543,8 +547,8 @@ def evaluate(
         drop_last=True,
         pin_memory=pin,
         num_workers=num_workers,
-        persistent_workers=num_workers > 0,
-        prefetch_factor=2 if num_workers > 0 else None,
+        persistent_workers=bool(cfg.training.persistent_workers and num_workers > 0),
+        prefetch_factor=(2 if num_workers > 0 else None),
     )
     with torch.no_grad():
         for X_cpu, Y_cpu in loader:
@@ -673,8 +677,8 @@ def train(cfg: ExperimentConfig) -> None:
     model.train()
     # Build a PyTorch DataLoader with random shuffling for training
     train_ds = LMSequenceDataset(train_tokens, cfg.model.context_length)
-    pin = device.type == "cuda"
-    num_workers = 4
+    pin = device.type == "cuda" and bool(cfg.training.pin_memory)
+    num_workers = max(0, int(min(cfg.training.num_workers, (os.cpu_count() or cfg.training.num_workers))))
     train_loader = DataLoader(
         train_ds,
         batch_size=cfg.training.batch_size,
@@ -682,8 +686,8 @@ def train(cfg: ExperimentConfig) -> None:
         drop_last=True,
         pin_memory=pin,
         num_workers=num_workers,
-        persistent_workers=num_workers > 0,
-        prefetch_factor=2 if num_workers > 0 else None,
+        persistent_workers=bool(cfg.training.persistent_workers and num_workers > 0),
+        prefetch_factor=(2 if num_workers > 0 else None),
     )
     train_iter = iter(train_loader)
     for step in range(start_step, cfg.training.total_steps):
