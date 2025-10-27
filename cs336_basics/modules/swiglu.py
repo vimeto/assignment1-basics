@@ -19,7 +19,9 @@ class SwiGLU(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         w1_res = self.w1(x)
-        w1_silu = torch.sigmoid(w1_res) * w1_res
+        w2_val = torch.relu(w1_res)
+        w2_val = w2_val * w2_val
+        w1_silu = w2_val * w1_res
 
         w_13 = w1_silu * self.w3(x)
 
