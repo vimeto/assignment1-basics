@@ -16,7 +16,12 @@ class LMSequenceDataset(Dataset):
     """
 
     def __init__(self, tokens: npt.NDArray[np.integer], context_length: int) -> None:
-        arr = np.asarray(tokens)
+        # Preserve memmap to avoid materializing into RAM and to let workers
+        # reopen the file-backed array without duplicating memory.
+        if isinstance(tokens, np.memmap) or isinstance(getattr(tokens, 'base', None), np.memmap):
+            arr = tokens  # keep mapping/view
+        else:
+            arr = np.asarray(tokens)
         if arr.ndim != 1:
             raise ValueError("tokens must be a 1D array of token ids")
         if arr.size < context_length + 1:
