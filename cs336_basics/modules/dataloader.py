@@ -1,22 +1,52 @@
 from __future__ import annotations
-import math
 import numpy as np
 import numpy.typing as npt
 import torch
+from torch.utils.data import Dataset
+import math
+
+__all__ = ["LMSequenceDataset", "dataloader", "StridedSampler"]
+
+
+class LMSequenceDataset(Dataset):
+    """Simple indexable dataset over token starts for language modeling.
+
+    Given a 1D token array T of length L and context_length S, this dataset has
+    length N = L - S. Item i returns (T[i:i+S], T[i+1:i+S+1]).
+    """
+
+    def __init__(self, tokens: npt.NDArray[np.integer], context_length: int) -> None:
+        arr = np.asarray(tokens)
+        if arr.ndim != 1:
+            raise ValueError("tokens must be a 1D array of token ids")
+        if arr.size < context_length + 1:
+            raise ValueError(
+                f"tokens must have at least context_length+1 elements (got {arr.size}, need {context_length+1})"
+            )
+        self.tokens = arr
+        self.context_length = int(context_length)
+        self.N = int(arr.size - self.context_length)
+
+    def __len__(self) -> int:
+        return self.N
+
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
+        i = int(idx)
+        S = self.context_length
+        x = self.tokens[i : i + S]
+        y = self.tokens[i + 1 : i + S + 1]
+        # Ensure contiguous and int64 for embedding lookups
+        X = torch.from_numpy(np.ascontiguousarray(x, dtype=np.int64))
+        Y = torch.from_numpy(np.ascontiguousarray(y, dtype=np.int64))
+        return X, Y
+
+
+# Deprecated, kept for compatibility: one-off batch maker and strided sampler
 from dataclasses import dataclass
 
-__all__ = ["dataloader", "StridedSampler"]
 
 @dataclass
 class StridedSampler:
-    """Randomized strided sampler without replacement across steps.
-
-    Walks all valid start positions exactly once (modulo wrap on the last partial
-    batch), then reshuffles (new stride co-prime to N and new offset).
-
-    Mirrors the idea used in top leaderboard PRs: fewer early repeats => faster
-    val-loss drop.
-    """
     N: int
     rng: np.random.Generator
     offset: int | None = None
@@ -24,7 +54,6 @@ class StridedSampler:
     cursor: int = 0
 
     def _choose_stride(self) -> int:
-        # choose stride in [1, N-1] that is coprime with N
         if self.N <= 1:
             return 1
         stride = int(self.rng.integers(1, self.N))
@@ -46,7 +75,6 @@ class StridedSampler:
         starts = (self.offset + self.stride * idx_range) % max(1, self.N)
         self.cursor = stop
         if self.cursor >= self.N:
-            # start a new epoch on next call
             self._new_epoch()
         return starts
 
@@ -62,13 +90,6 @@ def dataloader(
     pin_memory: bool | None = None,
     sampler: StridedSampler | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Return (X,Y) token windows of shape (B,S), (B,S) on target device.
-
-    If `sampler` is provided, use randomized strided sampling WITHOUT replacement
-    across steps (preferred for early-val improvements). Otherwise, fall back to
-    independent random starts (original behavior).
-    """
-
     dataset = np.asarray(dataset)
     if dataset.ndim != 1:
         raise ValueError("dataset must be a 1D array of token ids")
@@ -88,12 +109,7 @@ def dataloader(
         if sampler is not None:
             starts = sampler.next(batch_size)
         else:
-            stride = int(rng.integers(1, N))
-            while math.gcd(stride, N) != 1 and N > 1:
-                stride = int(rng.integers(1, N))
-            offset = int(rng.integers(0, N))
-            seq = np.arange(batch_size, dtype=np.int64)
-            starts = (offset + stride * seq) % N
+            starts = rng.integers(0, N, size=batch_size, dtype=np.int64)
 
     offsets = np.arange(context_length, dtype=np.int64)
     x_idx = starts[:, None] + offsets

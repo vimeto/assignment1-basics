@@ -15,7 +15,7 @@
     "use_post_norm": false,
     "use_rope": true,
     "use_x0_mixin": false,
-    "tie_embeddings": false
+    "tie_embeddings": true
   },
   "optimizer": {
     "name": "muon",
@@ -44,7 +44,7 @@
     "seed": 7,
     "device": "cuda",
     "precision": "bfloat16",
-    "grad_clip_norm": 1.0,
+    "grad_clip_norm": 1.5,
     "step_interval": 1,
     "eval_interval": 100,
     "eval_batches": 32,
@@ -52,8 +52,8 @@
     "use_torch_compile": true,
     "compile_mode": "default",
     "use_gradient_checkpointing": false,
-    "logit_softcap": 15.0,
-    "z_loss_weight": 1.0e-4,
+    "logit_softcap": 20.0,
+    "z_loss_weight": 5.0e-5,
     "softcap_warmup_steps": 1000,
     "zloss_warmup_steps": 1000
   },

@@ -8,6 +8,7 @@ from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, Tuple
+import os
 import torch.compiler
 
 import numpy as np
@@ -24,7 +25,7 @@ except (ImportError, AttributeError):  # pragma: no cover
     from torch.cuda.amp import GradScaler as TorchGradScaler  # type: ignore
 
 from cs336_basics.modules.cross_entropy import cross_entropy
-from cs336_basics.modules.dataloader import dataloader, StridedSampler
+from cs336_basics.modules.dataloader import LMSequenceDataset
 from cs336_basics.modules.optimizers import (
     AdamW,
     SGD,
@@ -38,6 +39,7 @@ from cs336_basics.modules.checkpointing import (
     load_checkpoint as module_load_checkpoint,
 )
 from cs336_basics.modules.gradient import gradient_clipping
+from torch.utils.data import DataLoader, RandomSampler
 
 try:
     import wandb
@@ -527,26 +529,34 @@ def evaluate(
     if use_autocast:
         amp_dtype = torch.float16 if cfg.training.precision.lower() == "float16" else torch.bfloat16
     eval_batch_size = cfg.training.eval_batch_size or cfg.training.batch_size
+    # Build a random-sampling DataLoader for evaluation
+    ds = LMSequenceDataset(dataset, cfg.model.context_length)
+    # Sample exactly eval_batches * eval_batch_size items at random with replacement
+    num_samples = int(eval_batch_size) * int(cfg.training.eval_batches)
+    sampler = RandomSampler(ds, replacement=True, num_samples=num_samples)
+    pin = device.type == "cuda"
+    num_workers = 4
+    loader = DataLoader(
+        ds,
+        batch_size=eval_batch_size,
+        sampler=sampler,
+        drop_last=True,
+        pin_memory=pin,
+        num_workers=num_workers,
+        persistent_workers=num_workers > 0,
+        prefetch_factor=2 if num_workers > 0 else None,
+    )
     with torch.no_grad():
-        for _ in range(cfg.training.eval_batches):
-            X, Y = dataloader(
-                dataset=dataset,
-                batch_size=eval_batch_size,
-                context_length=cfg.model.context_length,
-                device=device.type,
-                rng=rng,
-                non_blocking=True,
-            )
-            with (
-                torch.amp.autocast("cuda", dtype=amp_dtype)
-                if use_autocast
-                else nullcontext()
-            ):
+        for X_cpu, Y_cpu in loader:
+            if device.type == "cuda":
+                X = X_cpu.to(device, non_blocking=True)
+                Y = Y_cpu.to(device, non_blocking=True)
+            else:
+                X = X_cpu.to(device)
+                Y = Y_cpu.to(device)
+            with (torch.amp.autocast("cuda", dtype=amp_dtype) if use_autocast else nullcontext()):
                 logits = model(X)
-                loss = cross_entropy(
-                    logits.reshape(-1, logits.size(-1)),
-                    Y.reshape(-1),
-                )
+                loss = cross_entropy(logits.reshape(-1, logits.size(-1)), Y.reshape(-1))
             losses.append(float(loss.item()))
     if original_mode:
         model.train()
@@ -661,9 +671,21 @@ def train(cfg: ExperimentConfig) -> None:
     wandb_run = maybe_init_wandb(cfg)
 
     model.train()
-    train_sampler = StridedSampler(
-        N=int(train_tokens.size - cfg.model.context_length), rng=train_rng
+    # Build a PyTorch DataLoader with random shuffling for training
+    train_ds = LMSequenceDataset(train_tokens, cfg.model.context_length)
+    pin = device.type == "cuda"
+    num_workers = 4
+    train_loader = DataLoader(
+        train_ds,
+        batch_size=cfg.training.batch_size,
+        shuffle=True,
+        drop_last=True,
+        pin_memory=pin,
+        num_workers=num_workers,
+        persistent_workers=num_workers > 0,
+        prefetch_factor=2 if num_workers > 0 else None,
     )
+    train_iter = iter(train_loader)
     for step in range(start_step, cfg.training.total_steps):
         current_step = step + 1
         if schedule_active:
@@ -735,15 +757,18 @@ def train(cfg: ExperimentConfig) -> None:
         micro_losses: list[float] = []
 
         for _ in range(grad_accum_steps):
-            X, Y = dataloader(
-                dataset=train_tokens,
-                batch_size=cfg.training.batch_size,
-                context_length=cfg.model.context_length,
-                device=device.type,
-                rng=train_rng,
-                non_blocking=True,
-                sampler=train_sampler,
-            )
+            try:
+                X_cpu, Y_cpu = next(train_iter)
+            except StopIteration:
+                train_iter = iter(train_loader)
+                X_cpu, Y_cpu = next(train_iter)
+
+            if device.type == "cuda":
+                X = X_cpu.to(device, non_blocking=True)
+                Y = Y_cpu.to(device, non_blocking=True)
+            else:
+                X = X_cpu.to(device)
+                Y = Y_cpu.to(device)
 
             if grad_accum_steps > 1 and use_compile:
                 torch.compiler.cudagraph_mark_step_begin()

@@ -1,0 +1,64 @@
+{
+  "model": {
+    "vocab_size": 100,
+    "context_length": 16,
+    "d_model": 64,
+    "num_layers": 2,
+    "num_heads": 8,
+    "d_ff": 128,
+    "rope_theta": 10000.0,
+    "use_qk_norm": true,
+    "use_unet_residual": false,
+    "use_swiglu": false,
+    "use_rmsnorm": true,
+    "use_pre_norm": true,
+    "use_post_norm": false,
+    "use_rope": true,
+    "use_x0_mixin": false,
+    "tie_embeddings": false
+  },
+  "optimizer": {
+    "name": "adamw",
+    "lr": 0.003,
+    "betas": [0.9, 0.999],
+    "eps": 1e-8,
+    "weight_decay": 0.0
+  },
+  "training": {
+    "total_steps": 5,
+    "batch_size": 4,
+    "grad_accum_steps": 1,
+    "seed": 123,
+    "device": "cpu",
+    "precision": "float32",
+    "grad_clip_norm": null,
+    "step_interval": 1,
+    "eval_interval": 1,
+    "eval_batches": 2,
+    "eval_batch_size": 4,
+    "use_torch_compile": false,
+    "compile_mode": "reduce-overhead",
+    "use_gradient_checkpointing": false,
+    "logit_softcap": null,
+    "z_loss_weight": 0.0,
+    "softcap_warmup_steps": 100,
+    "zloss_warmup_steps": 100
+  },
+  "data": {
+    "train_path": "data/tiny_train.npy",
+    "val_path": "data/tiny_val.npy",
+    "dtype": "uint16"
+  },
+  "checkpoint": {
+    "checkpoint_dir": null,
+    "save_interval": 1000,
+    "max_to_keep": 1
+  },
+  "logging": {
+    "log_interval": 1,
+    "use_wandb": false
+  },
+  "lr_schedule": {
+    "enabled": false
+  }
+}
