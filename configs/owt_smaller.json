@@ -35,12 +35,15 @@
     "vector_base_lr": 0.003,
     "muon_lr_decay_start_tokens": 40000000,
     "muon_lr_decay_end_tokens": 400000000,
-    "muon_lr_final": 0.004
+    "muon_lr_final": 0.007
   },
   "training": {
     "total_steps": 6000,
     "batch_size": 96,
     "grad_accum_steps": 8,
+    "pin_memory": true,
+    "num_workers": 8,
+    "persistent_workers": true,
     "seed": 7,
     "device": "cuda",
     "precision": "bfloat16",
@@ -78,8 +81,8 @@
     "enabled": true,
     "schedule_type": "cosine",
     "alpha_max": 0.003,
-    "alpha_min": 0.0003,
+    "alpha_min": 0.0007,
     "warmup_tokens": 40000000,
-    "cosine_tokens": 450000000
+    "cosine_tokens": 800000000
   }
 }

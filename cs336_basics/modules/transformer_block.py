@@ -44,7 +44,8 @@ class TransformerBlock(nn.Module):
         self.lns_scale = 1.0
 
         # Residual scales (LayerScale-like) near 1/sqrt(2L)
-        init = 1.0 / math.sqrt(max(1, 2 * num_layers))
+        init = 1.0
+        # init = 1.0 / math.sqrt(max(1, 2 * num_layers))
         self.resid_attn_scale = nn.Parameter(torch.full((1, 1, d_model), init, device=device))
         self.resid_ffn_scale  = nn.Parameter(torch.full((1, 1, d_model), init, device=device))
         self.resid_attn_scale._optimizer_group = "vector"
