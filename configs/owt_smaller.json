@@ -17,15 +17,15 @@
     "use_rope": true,
     "use_x0_mixin": true,
     "x0_gate_init": 0.02,
-    "tie_embeddings": false
+    "tie_embeddings": true
   },
   "optimizer": {
     "name": "muon",
     "lr": 0.003,
     "betas": [0.9, 0.999],
     "eps": 1e-8,
-    "weight_decay": 0.02,
-    "matrix_weight_decay": 0.006,
+    "weight_decay": 0.05,
+    "matrix_weight_decay": 0.05,
     "vector_weight_decay": 0.0,
     "vector_lr_multiplier": 1.0,
     "muon_momentum": 0.95,
@@ -37,18 +37,18 @@
     "vector_base_lr": 0.003,
     "muon_lr_decay_start_tokens": 30000000,
     "muon_lr_decay_end_tokens": 420000000,
-    "muon_lr_final": 0.0035
+    "muon_lr_final": 0.0015
   },
   "training": {
-    "total_steps": 7500,
+    "total_steps": 5600,
     "batch_size": 96,
-    "grad_accum_steps": 8,
+    "grad_accum_steps": 2,
     "seed": 7,
     "device": "cuda",
     "precision": "bfloat16",
-    "grad_clip_norm": 1.5,
+    "grad_clip_norm": 1.0,
     "step_interval": 1,
-    "eval_interval": 150,
+    "eval_interval": 200,
     "eval_batches": 32,
     "eval_batch_size": 96,
     "use_torch_compile": true,
@@ -83,7 +83,7 @@
     "enabled": true,
     "schedule_type": "cosine",
     "alpha_max": 0.003,
-    "alpha_min": 0.0006,
+    "alpha_min": 0.0015,
     "warmup_tokens": 40000000,
     "cosine_tokens": 600000000
   }
