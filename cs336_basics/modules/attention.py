@@ -36,8 +36,8 @@ class MultiHeadAttention(nn.Module):
         nn.init.trunc_normal_(w_qkv, mean=0.0, std=std, a=-3*std, b=3*std)
         self.W_qkv = nn.Parameter(w_qkv)
 
-        w_o = torch.empty(d_model, d_model, device=self.device, dtype=self.dtype)
-        nn.init.trunc_normal_(w_o, mean=0.0, std=std, a=-3*std, b=3*std)
+        # Zero-init W_o (stabilizes early training; widely used in speedruns)
+        w_o = torch.zeros(d_model, d_model, device=self.device, dtype=self.dtype)
         self.W_o = nn.Parameter(w_o)
 
         if self.use_qk_norm:
@@ -67,13 +67,13 @@ class MultiHeadAttention(nn.Module):
             self.k_norm = None
             self.qk_logit_scale = None
 
-        # self.v_bias = nn.Parameter(torch.zeros(self.num_heads, self.d_k, device=device, dtype=dtype))
-        # self.v_bias_gate = nn.Parameter(torch.logit(torch.tensor(0.01, device=device)).to(dtype))
-
-        # self.v_bias._optimizer_group = "vector"
-        # self.v_bias_gate._optimizer_group = "vector"
-        # self.v_bias._weight_decay = 0.0
-        # self.v_bias_gate._weight_decay = 0.0
+        # Lightweight value residual (ResFormer-like): V <- V + gate * v_bias
+        self.v_bias = nn.Parameter(torch.zeros(self.num_heads, self.d_k, device=device, dtype=dtype))
+        self.v_bias_gate = nn.Parameter(torch.logit(torch.tensor(0.01, device=device)).to(dtype))
+        self.v_bias._optimizer_group = "vector"
+        self.v_bias_gate._optimizer_group = "vector"
+        self.v_bias._weight_decay = 0.0
+        self.v_bias_gate._weight_decay = 0.0
 
     def forward(self, x: torch.Tensor, token_positions: torch.Tensor | None = None) -> torch.Tensor:
         # x: (B, S, d_model)
@@ -93,9 +93,9 @@ class MultiHeadAttention(nn.Module):
             q = self.rope(q, token_positions)
             k = self.rope(k, token_positions)
 
-        # if self.v_bias is not None:
-        #     gate = torch.sigmoid(self.v_bias_gate)
-        #     v = v + gate * self.v_bias.view(1, self.num_heads, 1, self.d_k)
+        # value residual (per-head, broadcast over batch/sequence)
+        gate = torch.sigmoid(self.v_bias_gate)
+        v = v + gate * self.v_bias.view(1, self.num_heads, 1, self.d_k)
 
         if self.qk_logit_scale is not None:
             # We provide our own scale (initialized to 1/sqrt(d_k)), so keep torch's scale at 1.0.

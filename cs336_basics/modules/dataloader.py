@@ -4,6 +4,7 @@ import numpy.typing as npt
 import torch
 from torch.utils.data import Dataset
 import math
+from torch.utils.data import Sampler
 
 __all__ = ["LMSequenceDataset", "dataloader", "StridedSampler"]
 
@@ -44,6 +45,40 @@ class LMSequenceDataset(Dataset):
         X = torch.from_numpy(np.ascontiguousarray(x, dtype=np.int64))
         Y = torch.from_numpy(np.ascontiguousarray(y, dtype=np.int64))
         return X, Y
+
+
+class RandomizedStridedIndexSampler(Sampler[int]):
+    """Epoch-wise randomized strided traversal of start indices without replacement.
+
+    Strongly reduces duplicate windows compared to plain shuffle=True.
+    """
+
+    def __init__(self, N: int, rng: np.random.Generator | None = None) -> None:
+        self.N = int(max(1, N))
+        self.rng = rng or np.random.default_rng()
+        self._epoch_plan: np.ndarray | None = None
+        self._cursor = 0
+
+    def _plan_epoch(self) -> None:
+        # choose a stride coprime with N
+        stride = int(self.rng.integers(1, self.N))
+        while math.gcd(stride, self.N) != 1:
+            stride = int(self.rng.integers(1, self.N))
+        offset = int(self.rng.integers(0, self.N))
+        # generate 0..N-1 in a permuted strided order
+        idx = (offset + stride * np.arange(self.N, dtype=np.int64)) % self.N
+        self._epoch_plan = idx
+        self._cursor = 0
+
+    def __iter__(self):
+        if self._epoch_plan is None or self._cursor >= self.N:
+            self._plan_epoch()
+        plan = self._epoch_plan
+        self._plan_epoch()  # pre-plan next epoch for worker persistence
+        return iter(plan.tolist())
+
+    def __len__(self) -> int:
+        return self.N
 
 
 # Deprecated, kept for compatibility: one-off batch maker and strided sampler

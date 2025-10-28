@@ -25,7 +25,7 @@ except (ImportError, AttributeError):  # pragma: no cover
     from torch.cuda.amp import GradScaler as TorchGradScaler  # type: ignore
 
 from cs336_basics.modules.cross_entropy import cross_entropy
-from cs336_basics.modules.dataloader import LMSequenceDataset
+from cs336_basics.modules.dataloader import LMSequenceDataset, RandomizedStridedIndexSampler
 from cs336_basics.modules.optimizers import (
     AdamW,
     SGD,
@@ -679,10 +679,12 @@ def train(cfg: ExperimentConfig) -> None:
     train_ds = LMSequenceDataset(train_tokens, cfg.model.context_length)
     pin = device.type == "cuda" and bool(cfg.training.pin_memory)
     num_workers = max(0, int(min(cfg.training.num_workers, (os.cpu_count() or cfg.training.num_workers))))
+    # randomized strided without-replacement sampling
+    train_sampler = RandomizedStridedIndexSampler(len(train_ds), rng=train_rng)
     train_loader = DataLoader(
         train_ds,
         batch_size=cfg.training.batch_size,
-        shuffle=True,
+        sampler=train_sampler,
         drop_last=True,
         pin_memory=pin,
         num_workers=num_workers,
@@ -690,6 +692,8 @@ def train(cfg: ExperimentConfig) -> None:
         prefetch_factor=(2 if num_workers > 0 else None),
     )
     train_iter = iter(train_loader)
+    # running tokens counter (including accum microsteps)
+    seen_tokens = 0
     for step in range(start_step, cfg.training.total_steps):
         current_step = step + 1
         if schedule_active:
@@ -801,6 +805,7 @@ def train(cfg: ExperimentConfig) -> None:
                 loss = micro_loss / grad_accum_steps
 
             micro_losses.append(float(micro_loss.detach().cpu()))
+            seen_tokens += batch_tokens
 
             if scaler.is_enabled():
                 scaler.scale(loss).backward()
@@ -826,6 +831,7 @@ def train(cfg: ExperimentConfig) -> None:
             metrics: dict[str, float | None] = {
                 "train/loss": mean_micro_loss,
                 "optimizer/global_grad_norm": grad_norm,
+                "tokens/seen": float(seen_tokens),
             }
 
             if isinstance(optimizer, MuonAdamW):
