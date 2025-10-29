@@ -287,6 +287,193 @@ class MuonAdamW(torch.optim.Optimizer):
                 self._adamw_step(group)
         return loss
 
+
+class NorMuon(torch.optim.Optimizer):
+    """Standalone Muon for matrix-shaped params only (ndim >= 2).
+
+    Applies orthogonalized momentum updates with Polar Express and per-row/col RMS normalizer.
+    """
+
+    def __init__(
+        self,
+        params,
+        lr: float = 1e-3,
+        weight_decay: float = 0.0,
+        momentum: float = 0.95,
+        normalizer_beta: float = 0.95,
+        normalizer_eps: float = 1e-10,
+        eps: float = 1e-7,
+    ) -> None:
+        defaults = dict(
+            lr=lr,
+            weight_decay=weight_decay,
+            momentum=momentum,
+            normalizer_beta=normalizer_beta,
+            normalizer_eps=normalizer_eps,
+            eps=eps,
+        )
+        super().__init__(list(params), defaults)
+
+    @torch.no_grad()
+    def step(self, closure: Optional[Callable] = None):
+        loss = None if closure is None else closure()
+        for group in self.param_groups:
+            lr = group["lr"]
+            wd = group.get("weight_decay", 0.0)
+            momentum = group.get("momentum", 0.95)
+            normalizer_beta = group.get("normalizer_beta", 0.95)
+            normalizer_eps = group.get("normalizer_eps", 1e-10)
+
+            # bucket by shape and _is_qkvo flag
+            shape_buckets: dict[tuple[tuple[int, ...], bool], list[torch.nn.Parameter]] = defaultdict(list)
+            for p in group["params"]:
+                if p.grad is None:
+                    continue
+                if p.grad.ndim < 2:
+                    # only matrices here
+                    continue
+                is_qkvo = bool(getattr(p, "_is_qkvo", False))
+                shape_buckets[(tuple(p.grad.shape), is_qkvo)].append(p)
+
+            for (shape, is_qkvo_batch), params_ in shape_buckets.items():
+                stacked_updates = []
+                infos = []
+                for p in params_:
+                    grad = p.grad.data
+                    param_decay = getattr(p, "_weight_decay", wd)
+                    state = self.state[p]
+                    step = state.get("step", 0) + 1
+                    state["step"] = step
+
+                    grad32 = grad.to(torch.float32)
+                    rows = grad32.shape[0]
+                    cols = grad32.numel() // rows
+                    grad_matrix = grad32.reshape(rows, cols)
+
+                    buf = state.get("momentum_buffer")
+                    if buf is None or buf.shape != grad.shape:
+                        buf = torch.zeros_like(grad, dtype=torch.float32)
+                    state["momentum_buffer"] = buf
+                    buf_matrix = buf.reshape(rows, cols)
+                    buf_matrix.mul_(momentum).add_(grad_matrix, alpha=1 - momentum)
+
+                    update_matrix = grad_matrix.lerp(buf_matrix, momentum)
+                    stacked_updates.append(update_matrix)
+                    infos.append((p, rows, cols, param_decay, grad.shape, state))
+
+                if not stacked_updates:
+                    continue
+
+                update_batch = torch.stack(stacked_updates)
+                if is_qkvo_batch:
+                    B, r, c = update_batch.shape
+                    if c % 4 == 0:
+                        reshaped = update_batch.view(B * 4, r, c // 4)
+                        orth = polar_express_sign(reshaped)
+                        orth_updates = orth.view(B, 4, r, c // 4).reshape(B, r, c)
+                    elif r % 4 == 0:
+                        reshaped = update_batch.view(B * 4, r // 4, c)
+                        orth = polar_express_sign(reshaped)
+                        orth_updates = orth.view(B, 4, r // 4, c).reshape(B, r, c)
+                    else:
+                        orth_updates = polar_express_sign(update_batch)
+                else:
+                    orth_updates = polar_express_sign(update_batch)
+
+                for mat, info in zip(orth_updates, infos):
+                    p, rows, cols, param_decay, original_shape, state = info
+
+                    orig_norm = mat.norm().to(torch.float32)
+                    mat32 = mat.to(torch.float32)
+                    if rows >= cols:
+                        reduce_dim = 1
+                        moment_shape = (rows, 1)
+                    else:
+                        reduce_dim = 0
+                        moment_shape = (1, cols)
+                    moment = mat32.pow(2).mean(dim=reduce_dim, keepdim=True)
+                    second = state.get("second_moment")
+                    if second is None or second.shape != moment_shape:
+                        second = torch.zeros(moment_shape, dtype=torch.float32, device=mat32.device)
+                    second.mul_(normalizer_beta).add_(moment, alpha=1 - normalizer_beta)
+                    state["second_moment"] = second
+
+                    mat32.mul_((second + normalizer_eps) ** -0.5)
+                    new_norm = mat32.norm()
+                    if orig_norm > 0 and new_norm > 0:
+                        mat32.mul_(orig_norm / (new_norm + normalizer_eps))
+
+                    aspect = math.sqrt(max(1.0, rows / float(cols)))
+                    lr_mul = getattr(p, "lr_mul", 1.0)
+                    eff_lr = lr * aspect * lr_mul
+                    wd_mul = getattr(p, "wd_mul", 1.0)
+
+                    update_tensor = mat32.reshape(original_shape).to(p.data.dtype)
+                    p.data.add_(update_tensor, alpha=-eff_lr)
+
+                    if param_decay != 0:
+                        p.data.add_(p.data, alpha=-eff_lr * param_decay * wd_mul)
+        return loss
+
+
+class DistAdam(torch.optim.Optimizer):
+    """Single-GPU AdamW-style optimizer used for scalar/head/embed params.
+
+    Named "DistAdam" to mirror nanoGPT API; this implementation is local (non-distributed).
+    """
+
+    def __init__(
+        self,
+        params,
+        lr: float = 1e-3,
+        betas: tuple[float, float] = (0.65, 0.95),
+        eps: float = 1e-8,
+        weight_decay: float = 0.0,
+    ) -> None:
+        defaults = dict(lr=lr, betas=betas, eps=eps, weight_decay=weight_decay)
+        super().__init__(list(params), defaults)
+
+    @torch.no_grad()
+    def step(self, closure: Optional[Callable] = None):
+        loss = None if closure is None else closure()
+        for group in self.param_groups:
+            lr = group["lr"]
+            beta1, beta2 = group.get("betas", (0.65, 0.95))
+            eps = group.get("eps", 1e-8)
+            wd = group.get("weight_decay", 0.0)
+            for p in group["params"]:
+                if p.grad is None:
+                    continue
+                grad = p.grad.data
+                lr_mul = getattr(p, "lr_mul", 1.0)
+                wd_mul = getattr(p, "wd_mul", 1.0)
+                lr_param = lr * lr_mul
+
+                state = self.state[p]
+                exp_avg = state.get("exp_avg")
+                exp_avg_sq = state.get("exp_avg_sq")
+                if exp_avg is None:
+                    exp_avg = torch.zeros_like(p.data, dtype=torch.float32)
+                    exp_avg_sq = torch.zeros_like(p.data, dtype=torch.float32)
+                step_t = state.get("step", 0) + 1
+                state["step"] = step_t
+
+                g32 = grad.to(torch.float32)
+                exp_avg.mul_(beta1).add_(g32, alpha=1 - beta1)
+                exp_avg_sq.mul_(beta2).addcmul_(g32, g32, value=1 - beta2)
+
+                denom = exp_avg_sq.sqrt().add_(eps)
+                step_size = lr_param * (math.sqrt(1 - beta2 ** step_t) / (1 - beta1 ** step_t))
+                update = (exp_avg / denom).to(p.data.dtype)
+                p.data.add_(update, alpha=-step_size)
+
+                if wd != 0:
+                    p.data.add_(p.data, alpha=-lr_param * wd * wd_mul)
+
+                state["exp_avg"] = exp_avg
+                state["exp_avg_sq"] = exp_avg_sq
+        return loss
+
 def learning_rate_schedule(t: int, alpha_max: float, alpha_min: float, T_w: int, T_c: int) -> float:
     if t < T_w:
         return alpha_max * (t / T_w)

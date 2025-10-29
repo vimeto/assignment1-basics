@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Iterable
 import torch
 
-from cs336_basics.modules.optimizers import AdamW, SGD, MuonAdamW
+from cs336_basics.modules.optimizers import AdamW, SGD, MuonAdamW, NorMuon, DistAdam
 
 
 TORCH_PRECISIONS = {
@@ -56,6 +56,51 @@ def build_optimizer(cfg, parameters: Iterable[torch.nn.Parameter], base_lr: floa
     raise ValueError(f"Unsupported optimizer: {opt_cfg.name}")
 
 
+def split_params_two_optimizers(model: torch.nn.Module) -> tuple[list[torch.nn.Parameter], list[torch.nn.Parameter]]:
+    adam_params: list[torch.nn.Parameter] = []
+    muon_params: list[torch.nn.Parameter] = []
+
+    for name, p in model.named_parameters():
+        if not p.requires_grad:
+            continue
+        lname = name.lower()
+        is_embedding = ("embedding" in lname)
+        is_head = ("ffn.linear" in lname) or ("lm_head" in lname)
+        is_scalar = (p.ndim <= 1)
+        is_gate = ("gate" in lname) or ("resid_" in lname)
+
+        if is_embedding or is_head or is_scalar:
+            adam_params.append(p)
+        else:
+            # default heavy weights (attn/mlp matrices) go to Muon
+            muon_params.append(p)
+
+    return adam_params, muon_params
+
+
+def build_optimizers(cfg, model: torch.nn.Module) -> list[torch.optim.Optimizer]:
+    adam_params, muon_params = split_params_two_optimizers(model)
+    # DistAdam (vectors, head, embeddings)
+    opt_vec = DistAdam(
+        adam_params,
+        lr=cfg.optimizer.vector_base_lr or cfg.optimizer.lr,
+        betas=cfg.optimizer.betas,
+        eps=cfg.optimizer.eps,
+        weight_decay=cfg.optimizer.vector_weight_decay if cfg.optimizer.vector_weight_decay is not None else cfg.optimizer.weight_decay,
+    )
+    # NorMuon (matrices)
+    opt_mat = NorMuon(
+        muon_params,
+        lr=cfg.optimizer.matrix_base_lr or cfg.optimizer.lr,
+        momentum=cfg.optimizer.muon_momentum,
+        weight_decay=cfg.optimizer.matrix_weight_decay if cfg.optimizer.matrix_weight_decay is not None else cfg.optimizer.weight_decay,
+        normalizer_beta=0.95,
+        normalizer_eps=1e-10,
+    )
+    return [opt_vec, opt_mat]
+
+
+
 def zero_grads_for(optim: torch.optim.Optimizer, *, matrix: bool, vector: bool) -> None:
     for g in optim.param_groups:
         gtype = g.get("group_type")
@@ -63,4 +108,3 @@ def zero_grads_for(optim: torch.optim.Optimizer, *, matrix: bool, vector: bool) 
             for p in g["params"]:
                 if p.grad is not None:
                     p.grad = None
-
