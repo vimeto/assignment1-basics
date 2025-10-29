@@ -15,6 +15,10 @@ class Embedding(nn.Module):
         std = 0.02
         nn.init.trunc_normal_(weight, mean=0.0, std=std, a=-3*std, b=3*std)
         self.embedding_table = nn.Parameter(weight)
+        self.embedding_table._optimizer_group = "vector"
+        self.embedding_table._weight_decay = 0.0
+        self.embedding_table.lr_mul = 5.0
+        self.embedding_table.wd_mul = 0.0
         self.embedding_table._weight_decay = 0.0
 
     def forward(self, token_ids: torch.Tensor) -> torch.Tensor:

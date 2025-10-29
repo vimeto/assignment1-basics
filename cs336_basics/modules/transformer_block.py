@@ -52,6 +52,8 @@ class TransformerBlock(nn.Module):
         self.resid_ffn_scale._optimizer_group = "vector"
         self.resid_attn_scale._weight_decay = 0.0
         self.resid_ffn_scale._weight_decay = 0.0
+        self.resid_attn_scale._weight_decay = 0.0
+        self.resid_ffn_scale._weight_decay = 0.0
 
     def forward(self, x: torch.Tensor, pos: torch.Tensor) -> torch.Tensor:
         a_out = self.attn(self.pre_attn_norm(x) * self.lns_scale, pos)

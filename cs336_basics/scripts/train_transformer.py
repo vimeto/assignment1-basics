@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import dataclasses
 import json
 import math
@@ -25,7 +26,12 @@ except (ImportError, AttributeError):  # pragma: no cover
     from torch.cuda.amp import GradScaler as TorchGradScaler  # type: ignore
 
 from cs336_basics.modules.cross_entropy import cross_entropy
-from cs336_basics.modules.dataloader import LMSequenceDataset, RandomizedStridedIndexSampler
+from cs336_basics.modules.dataloader import (
+    LMSequenceDataset,
+    RandomizedStridedIndexSampler,
+    BOSAlignedSampler,
+    DevicePrefetcher,
+)
 from cs336_basics.modules.optimizers import (
     AdamW,
     SGD,
@@ -39,7 +45,7 @@ from cs336_basics.modules.checkpointing import (
     load_checkpoint as module_load_checkpoint,
 )
 from cs336_basics.modules.gradient import gradient_clipping
-from torch.utils.data import DataLoader, RandomSampler
+from torch.utils.data import DataLoader, RandomSampler, Sampler
 
 try:
     import wandb
@@ -85,6 +91,7 @@ class OptimizerConfig:
     muon_momentum_min: float | None = None
     muon_momentum_max: float | None = None
     muon_warmup_steps: int = 0
+    muon_momentum_cooldown_steps: int = 0
     muon_ns_steps: int = 5
     depth_mu_enabled: bool = False
     depth_mu_base_lr: float = 4e-4
@@ -123,12 +130,18 @@ class TrainingConfig:
     num_workers: int = 2
     pin_memory: bool = True
     persistent_workers: bool = False
+    align_to_bos: bool = False
+    compile_warmup_steps: int = 0
+    ema_decay: float | None = None
+    ema_update_interval: int = 1
+    use_ema_for_eval: bool = False
 
 @dataclass(frozen=True)
 class DataConfig:
     train_path: Path | None = None
     val_path: Path | None = None
     dtype: str = "uint16"
+    bos_token_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -679,8 +692,14 @@ def train(cfg: ExperimentConfig) -> None:
     train_ds = LMSequenceDataset(train_tokens, cfg.model.context_length)
     pin = device.type == "cuda" and bool(cfg.training.pin_memory)
     num_workers = max(0, int(min(cfg.training.num_workers, (os.cpu_count() or cfg.training.num_workers))))
-    # randomized strided without-replacement sampling
-    train_sampler = RandomizedStridedIndexSampler(len(train_ds), rng=train_rng)
+    # randomized sampling without replacement (optionally BOS-aligned)
+    train_sampler: Sampler[int]
+    align_to_bos = cfg.training.align_to_bos and cfg.data.bos_token_id is not None
+    if align_to_bos:
+        bos_sampler = BOSAlignedSampler(train_tokens, cfg.model.context_length, int(cfg.data.bos_token_id), rng=train_rng)
+        train_sampler = bos_sampler if len(bos_sampler) > 0 else RandomizedStridedIndexSampler(len(train_ds), rng=train_rng)
+    else:
+        train_sampler = RandomizedStridedIndexSampler(len(train_ds), rng=train_rng)
     train_loader = DataLoader(
         train_ds,
         batch_size=cfg.training.batch_size,
@@ -691,7 +710,86 @@ def train(cfg: ExperimentConfig) -> None:
         persistent_workers=bool(cfg.training.persistent_workers and num_workers > 0),
         prefetch_factor=(2 if num_workers > 0 else None),
     )
-    train_iter = iter(train_loader)
+    warmup_steps = 0
+    if cfg.training.use_torch_compile:
+        warmup_steps = max(0, min(cfg.training.compile_warmup_steps, cfg.training.total_steps))
+    if warmup_steps > 0:
+        saved_model_state = copy.deepcopy(model.state_dict())
+        saved_optimizer_state = copy.deepcopy(optimizer.state_dict())
+        saved_scaler_state = scaler.state_dict()
+        warmup_iter = iter(train_loader)
+        for warm_step in range(warmup_steps):
+            optimizer.zero_grad(set_to_none=True)
+            for _ in range(grad_accum_steps):
+                try:
+                    X_cpu, Y_cpu = next(warmup_iter)
+                except StopIteration:
+                    warmup_iter = iter(train_loader)
+                    X_cpu, Y_cpu = next(warmup_iter)
+
+                if device.type == "cuda":
+                    X = X_cpu.to(device, non_blocking=True)
+                    Y = Y_cpu.to(device, non_blocking=True)
+                else:
+                    X = X_cpu.to(device)
+                    Y = Y_cpu.to(device)
+
+                with autocast_scope():
+                    logits = model(X)
+                    warm_loss = cross_entropy(
+                        logits.reshape(-1, logits.size(-1)),
+                        Y.reshape(-1),
+                    ) / grad_accum_steps
+
+                if scaler.is_enabled():
+                    scaler.scale(warm_loss).backward()
+                else:
+                    warm_loss.backward()
+
+            step_kwargs = {"matrix_step": True, "vector_step": True} if isinstance(optimizer, MuonAdamW) else {}
+            if scaler.is_enabled():
+                optimizer.step(**step_kwargs)
+                scaler.update()
+            else:
+                optimizer.step(**step_kwargs)
+
+        model.load_state_dict(saved_model_state)
+        optimizer.load_state_dict(saved_optimizer_state)
+        scaler.load_state_dict(saved_scaler_state)
+        torch.cuda.empty_cache()
+        del saved_model_state, saved_optimizer_state, saved_scaler_state
+
+    if device.type == "cuda":
+        train_prefetcher = DevicePrefetcher(train_loader, device)
+        train_iter = None
+    else:
+        train_iter = iter(train_loader)
+        train_prefetcher = None
+    ema_state: dict[str, torch.Tensor] | None = None
+    ema_decay = cfg.training.ema_decay
+    ema_update_every = max(1, cfg.training.ema_update_interval)
+    if ema_decay is not None:
+        ema_state = {
+            name: param.detach().float().cpu().clone()
+            for name, param in model.named_parameters()
+            if param.requires_grad
+        }
+    def muon_momentum_at(step_idx: int) -> float:
+        opt_cfg = cfg.optimizer
+        base = opt_cfg.muon_momentum
+        mom_min = opt_cfg.muon_momentum_min if opt_cfg.muon_momentum_min is not None else base
+        mom_max = opt_cfg.muon_momentum_max if opt_cfg.muon_momentum_max is not None else base
+        warmup = max(0, opt_cfg.muon_warmup_steps)
+        cooldown = max(0, opt_cfg.muon_momentum_cooldown_steps)
+        total = cfg.training.total_steps
+        if warmup > 0 and step_idx <= warmup:
+            frac = step_idx / warmup
+            return mom_min + frac * (mom_max - mom_min)
+        cooldown_start = max(0, total - cooldown)
+        if cooldown > 0 and step_idx >= cooldown_start:
+            frac = (step_idx - cooldown_start) / max(1, cooldown)
+            return mom_max - frac * (mom_max - mom_min)
+        return mom_max
     # running tokens counter (including accum microsteps)
     seen_tokens = 0
     for step in range(start_step, cfg.training.total_steps):
@@ -751,6 +849,12 @@ def train(cfg: ExperimentConfig) -> None:
             if lr_sched is not None:
                 for group in optimizer.param_groups:
                     group["lr"] = lr_sched
+        current_muon_momentum = None
+        if isinstance(optimizer, MuonAdamW):
+            current_muon_momentum = muon_momentum_at(current_step)
+            for group in optimizer.param_groups:
+                if group.get("group_type") == "matrix":
+                    group["momentum"] = current_muon_momentum
         # capture lr used for logging (vector LR if Muon, else first group)
         if isinstance(optimizer, MuonAdamW):
             vector_group = next((g for g in optimizer.param_groups if g.get("group_type") == "vector"), None)
@@ -765,16 +869,19 @@ def train(cfg: ExperimentConfig) -> None:
         micro_losses: list[float] = []
 
         for _ in range(grad_accum_steps):
-            try:
-                X_cpu, Y_cpu = next(train_iter)
-            except StopIteration:
-                train_iter = iter(train_loader)
-                X_cpu, Y_cpu = next(train_iter)
-
-            if device.type == "cuda":
-                X = X_cpu.to(device, non_blocking=True)
-                Y = Y_cpu.to(device, non_blocking=True)
+            if train_prefetcher is not None:
+                X, Y = train_prefetcher.next()
+                if X is None or Y is None:
+                    train_prefetcher.reset()
+                    X, Y = train_prefetcher.next()
+                    if X is None or Y is None:
+                        raise RuntimeError("DevicePrefetcher delivered no data")
             else:
+                try:
+                    X_cpu, Y_cpu = next(train_iter)
+                except StopIteration:
+                    train_iter = iter(train_loader)
+                    X_cpu, Y_cpu = next(train_iter)
                 X = X_cpu.to(device)
                 Y = Y_cpu.to(device)
 
@@ -820,11 +927,28 @@ def train(cfg: ExperimentConfig) -> None:
         if cfg.training.grad_clip_norm is not None:
             gradient_clipping(model_params, cfg.training.grad_clip_norm)
 
+        matrix_only_step = isinstance(optimizer, MuonAdamW) and (step % 2 == 0)
+        step_kwargs = {}
+        if isinstance(optimizer, MuonAdamW):
+            step_kwargs = {"matrix_step": True, "vector_step": not matrix_only_step}
         if scaler.is_enabled():
-            scaler.step(optimizer)
+            optimizer.step(**step_kwargs)
             scaler.update()
         else:
-            optimizer.step()
+            optimizer.step(**step_kwargs)
+
+        if ema_state is not None and current_step % ema_update_every == 0:
+            decay = float(ema_decay)
+            one_minus = 1.0 - decay
+            for name, param in model.named_parameters():
+                if not param.requires_grad:
+                    continue
+                target = ema_state.get(name)
+                if target is None:
+                    target = param.detach().float().cpu().clone()
+                    ema_state[name] = target
+                else:
+                    target.mul_(decay).add_(param.detach().float().cpu(), alpha=one_minus)
 
         if (step + 1) % cfg.logging.log_interval == 0 or step == start_step:
             mean_micro_loss = float(np.mean(micro_losses)) if micro_losses else float("nan")
@@ -873,6 +997,18 @@ def train(cfg: ExperimentConfig) -> None:
                 wandb.log({**metrics, "step": step + 1})
 
         if (step + 1) % cfg.training.eval_interval == 0:
+            ema_backup: dict[str, torch.Tensor] | None = None
+            if ema_state is not None and cfg.training.use_ema_for_eval:
+                ema_backup = {}
+                for name, param in model.named_parameters():
+                    if not param.requires_grad:
+                        continue
+                    ema_tensor = ema_state.get(name)
+                    if ema_tensor is None:
+                        continue
+                    ema_backup[name] = param.detach().clone()
+                    param.data.copy_(ema_tensor.to(param.device, dtype=param.dtype))
+
             val_metrics = evaluate(model, val_tokens, cfg, device, eval_rng)
             print(
                 "step="
@@ -886,6 +1022,11 @@ def train(cfg: ExperimentConfig) -> None:
                         "step": step + 1,
                     }
                 )
+            if ema_backup is not None:
+                for name, param in model.named_parameters():
+                    if name in ema_backup:
+                        param.data.copy_(ema_backup[name])
+                del ema_backup
 
         if (
             cfg.checkpoint.checkpoint_dir is not None

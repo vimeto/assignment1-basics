@@ -14,6 +14,8 @@ class RMSNorm(nn.Module):
         self.gi = nn.Parameter(gs)
         self.gi._optimizer_group = "vector"
         self.gi._weight_decay = 0.0
+        self.gi.wd_mul = 0.0
+        self.gi._weight_decay = 0.0
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         mean_sq = (x * x).mean(dim=-1, keepdim=True)

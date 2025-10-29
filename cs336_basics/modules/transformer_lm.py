@@ -68,6 +68,8 @@ class TransformerLM(nn.Module):
             for gate in self.skip_gates:
                 gate._optimizer_group = "vector"
                 gate._weight_decay = 0.0
+                gate.wd_mul = 0.0
+                gate._weight_decay = 0.0
         else:
             self.skip_gates = None
         self.unet_split = num_layers // 2
@@ -80,6 +82,8 @@ class TransformerLM(nn.Module):
             )
             for gate in self.x0_gates:
                 gate._optimizer_group = "vector"
+                gate._weight_decay = 0.0
+                gate.wd_mul = 0.0
                 gate._weight_decay = 0.0
         else:
             self.x0_gates = None

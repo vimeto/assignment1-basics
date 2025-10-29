@@ -1,37 +1,27 @@
+from collections import defaultdict
 from collections.abc import Callable, Iterable
 from typing import Optional
 import torch
 import math
 
 
-def zeroth_power_via_newtonschulz5(G: torch.Tensor, steps: int = 5, eps: float = 1e-7) -> torch.Tensor:
-    """Approximate spectral normalization used by Muon.
+def polar_express_sign(G: torch.Tensor) -> torch.Tensor:
+    """Return the orthogonal factor of the polar decomposition (matrix sign).
 
-    Returns ``G (G^T G)^{-1/2}`` using a quintic Newton-Schulz polynomial.
+    Accepts ``G`` with shape ``(..., m, n)`` and returns a tensor of the same
+    shape containing the nearest orthogonal matrix in Frobenius norm.
     """
 
-    orig_dtype = G.dtype
-    G = G.to(torch.float32)
-    shape = G.shape
-    if G.ndim != 2:
-        raise ValueError("Input to zeroth_power_via_newtonschulz5 must be 2D")
+    orig_was_2d = G.ndim == 2
+    if orig_was_2d:
+        G = G.unsqueeze(0)
 
-    a, b, c = (3.4445, -4.7750, 2.0315)
-    X = G / (G.norm() + eps)
-    transposed = False
-    if X.size(0) > X.size(1):
-        X = X.t()
-        transposed = True
+    U, _, Vh = torch.linalg.svd(G, full_matrices=False)
+    sign = U @ Vh
 
-    for _ in range(steps):
-        A = X @ X.t()
-        B = b * A + c * (A @ A)
-        X = a * X + B @ X
-
-    if transposed:
-        X = X.t()
-
-    return X.to(orig_dtype).reshape(shape)
+    if orig_was_2d:
+        sign = sign[0]
+    return sign
 
 
 class MuonAdamW(torch.optim.Optimizer):
@@ -117,56 +107,66 @@ class MuonAdamW(torch.optim.Optimizer):
         super().__init__(param_groups, defaults)
 
     def _muon_step(self, group):
-        lr = group["lr"]
+        base_lr = group["lr"]
         weight_decay = group.get("weight_decay", 0.0)
-        momentum = group["momentum"]
-        momentum_min = group.get("momentum_min")
-        momentum_max = group.get("momentum_max", momentum)
-        warmup_steps = group.get("warmup_steps", 0)
-        ns_steps = group.get("ns_steps", 5)
-        eps = group.get("eps", 1e-7)
+        momentum = group.get("momentum", 0.95)
 
-        current_momentum = momentum
+        shape_buckets: dict[tuple[int, ...], list[torch.nn.Parameter]] = defaultdict(list)
         for p in group["params"]:
             if p.grad is None:
                 continue
-            grad = p.grad.data
-            param_decay = getattr(p, "_weight_decay", weight_decay)
+            if p.grad.ndim < 2:
+                # these parameters should generally live in the vector group
+                continue
+            shape_buckets[tuple(p.grad.shape)].append(p)
 
-            state = self.state[p]
-            step = state.get("step", 0) + 1
-            state["step"] = step
+        for params in shape_buckets.values():
+            stacked_updates = []
+            infos = []
+            for p in params:
+                grad = p.grad.data
+                param_decay = getattr(p, "_weight_decay", weight_decay)
+                state = self.state[p]
+                step = state.get("step", 0) + 1
+                state["step"] = step
 
-            if grad.ndim < 2:
-                matrix = grad.unsqueeze(0)
-                reshape_back = grad.shape
-            else:
-                matrix = grad.reshape(grad.shape[0], -1)
-                reshape_back = grad.shape
+                grad32 = grad.to(torch.float32)
+                rows = grad32.shape[0]
+                cols = grad32.numel() // rows
+                grad_matrix = grad32.reshape(rows, cols)
 
-            orth = zeroth_power_via_newtonschulz5(matrix, steps=ns_steps, eps=eps)
-            orth = orth.reshape(reshape_back)
-            orth32 = orth.to(torch.float32)
+                buf = state.get("momentum_buffer")
+                if buf is None or buf.shape != grad.shape:
+                    buf = torch.zeros_like(grad, dtype=torch.float32)
+                state["momentum_buffer"] = buf
+                buf_matrix = buf.reshape(rows, cols)
+                buf_matrix.mul_(momentum).add_(grad_matrix, alpha=1 - momentum)
 
-            buf = state.get("momentum_buffer")
-            if buf is None:
-                buf = torch.zeros_like(p.data, dtype=torch.float32)
+                update_matrix = grad_matrix.lerp(buf_matrix, momentum)
+                stacked_updates.append(update_matrix)
+                infos.append((p, rows, cols, param_decay, grad.shape))
 
-            if momentum_min is not None and warmup_steps > 0 and step <= warmup_steps:
-                t = step / warmup_steps
-                current_momentum = momentum_min + t * (momentum_max - momentum_min)
-            else:
-                current_momentum = momentum_max
+            if not stacked_updates:
+                continue
 
-            buf.mul_(current_momentum).add_(orth32)
-            state["momentum_buffer"] = buf
-            p.data.add_(buf.to(p.data.dtype), alpha=-lr)
+            update_batch = torch.stack(stacked_updates)
+            orth_updates = polar_express_sign(update_batch)
 
-            if param_decay != 0:
-                p.data.add_(p.data, alpha=-lr * param_decay)
+            for mat, info in zip(orth_updates, infos):
+                p, rows, cols, param_decay, original_shape = info
+                aspect = math.sqrt(max(1.0, rows / float(cols)))
+                lr_mul = getattr(p, "lr_mul", 1.0)
+                eff_lr = base_lr * aspect * lr_mul
+                wd_mul = getattr(p, "wd_mul", 1.0)
 
-        group["effective_lr"] = lr
-        group["current_momentum"] = current_momentum
+                update_tensor = mat.reshape(original_shape).to(p.data.dtype)
+                p.data.add_(update_tensor, alpha=-eff_lr)
+
+                if param_decay != 0:
+                    p.data.add_(p.data, alpha=-eff_lr * param_decay * wd_mul)
+
+        group["effective_lr"] = base_lr
+        group["current_momentum"] = momentum
 
     def _adamw_step(self, group):
         lr = group["lr"] * group.get("vector_lr_multiplier", 1.0)
@@ -179,6 +179,9 @@ class MuonAdamW(torch.optim.Optimizer):
                 continue
             grad = p.grad.data
             param_decay = getattr(p, "_weight_decay", weight_decay)
+            lr_mul = getattr(p, "lr_mul", 1.0)
+            wd_mul = getattr(p, "wd_mul", 1.0)
+            lr_param = lr * lr_mul
 
             state = self.state[p]
             exp_avg = state.get("exp_avg")
@@ -197,26 +200,32 @@ class MuonAdamW(torch.optim.Optimizer):
             denom = exp_avg_sq.sqrt().add_(eps)
             bias_correction1 = 1 - beta1 ** step
             bias_correction2 = 1 - beta2 ** step
-            step_size = lr * math.sqrt(bias_correction2) / bias_correction1
+            step_size = lr_param * math.sqrt(bias_correction2) / bias_correction1
 
             update = (exp_avg / denom).to(p.data.dtype)
             p.data.add_(update, alpha=-step_size)
 
             if param_decay != 0:
-                p.data.add_(p.data, alpha=-lr * param_decay)
+                p.data.add_(p.data, alpha=-lr_param * param_decay * wd_mul)
 
             state["exp_avg"] = exp_avg
             state["exp_avg_sq"] = exp_avg_sq
 
         group["effective_lr"] = lr
 
-    def step(self, closure: Optional[Callable] = None):
+    def step(
+        self,
+        closure: Optional[Callable] = None,
+        *,
+        matrix_step: bool = True,
+        vector_step: bool = True,
+    ):
         loss = None if closure is None else closure()
         for group in self.param_groups:
             gtype = group.get("group_type")
-            if gtype == "matrix":
+            if gtype == "matrix" and matrix_step:
                 self._muon_step(group)
-            elif gtype == "vector":
+            elif gtype == "vector" and vector_step:
                 self._adamw_step(group)
         return loss
 
