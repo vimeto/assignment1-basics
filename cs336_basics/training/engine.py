@@ -234,13 +234,28 @@ def train(cfg: ExperimentConfig) -> None:
         import wandb  # optional
 
         if cfg.logging.use_wandb:
+            # Prepare comprehensive config for wandb
+            from cs336_basics.training.configs import serialize_config
+            config_dict = serialize_config(cfg)
+
             wandb_run = wandb.init(
                 project=cfg.logging.project,
                 entity=cfg.logging.entity,
                 name=cfg.logging.run_name,
                 mode=cfg.logging.mode,
-                config={},
+                config=config_dict,
             )
+
+            # Log model architecture info
+            if wandb_run is not None:
+                try:
+                    num_params = sum(p.numel() for p in model.parameters())
+                    num_trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+                    wandb_run.summary["model/total_parameters"] = num_params
+                    wandb_run.summary["model/trainable_parameters"] = num_trainable_params
+                    wandb_run.summary["model/parameter_size_mb"] = num_params * 4 / (1024**2)  # Assuming fp32
+                except Exception:
+                    pass
     except Exception:
         wandb_run = None
 
@@ -423,24 +438,68 @@ def train(cfg: ExperimentConfig) -> None:
                 "optimizer/global_grad_norm": grad_norm,
                 "tokens/seen": float(seen_tokens),
             }
+
+            # Learning rates
+            try:
+                matrix_lr = next((g["lr"] for g in optimizer.param_groups if g.get("group_type") == "matrix"), None)
+                vector_lr = next((g["lr"] for g in optimizer.param_groups if g.get("group_type") == "vector"), None)
+                if matrix_lr is not None:
+                    metrics["optimizer/matrix_lr"] = float(matrix_lr)
+                if vector_lr is not None:
+                    metrics["optimizer/vector_lr"] = float(vector_lr)
+                # Also log generic LR if not using group-specific
+                if matrix_lr is None and vector_lr is None and hasattr(optimizer, "param_groups"):
+                    generic_lr = optimizer.param_groups[0].get("lr")
+                    if generic_lr is not None:
+                        metrics["optimizer/lr"] = float(generic_lr)
+            except Exception:
+                pass
+
+            # Muon momentum
+            try:
+                for group in optimizer.param_groups:
+                    if group.get("group_type") == "matrix" and "momentum" in group:
+                        metrics["optimizer/muon_momentum"] = float(group["momentum"])
+                        break
+            except Exception:
+                pass
+
+            # Learning rate schedule progress
+            if lr_sched is not None:
+                metrics["schedule/lr_multiplier"] = float(lr_sched) if isinstance(lr_sched, (int, float)) else 1.0
+
+            # Training progress
+            metrics["progress/step"] = step + 1
+
+            # Scaler state (for FP16 training)
+            try:
+                if hasattr(scaler, "get_scale"):
+                    scale_val = scaler.get_scale()
+                    if scale_val is not None:
+                        metrics["optimizer/grad_scaler_scale"] = float(scale_val)
+            except Exception:
+                pass
+
+            # Batch statistics
+            if micro_losses:
+                metrics["train/loss_std"] = float(np.std(micro_losses))
+                metrics["train/loss_min"] = float(np.min(micro_losses))
+                metrics["train/loss_max"] = float(np.max(micro_losses))
+
             if wandb_run is not None:
                 try:
                     wandb_run.log({**metrics, "step": step + 1})  # type: ignore
                 except Exception:
                     pass
+
             parts = [f"step={step+1}", f"train_loss={mean_micro_loss:.4f}"]
             if grad_norm is not None:
                 parts.append(f"grad_norm={grad_norm:.4f}")
             # log lr if present
-            try:
-                matrix_lr = next((g["lr"] for g in optimizer.param_groups if g.get("group_type") == "matrix"), None)
-                vector_lr = next((g["lr"] for g in optimizer.param_groups if g.get("group_type") == "vector"), None)
-                if matrix_lr is not None:
-                    parts.append(f"matrix_lr={float(matrix_lr):.6f}")
-                if vector_lr is not None:
-                    parts.append(f"vector_lr={float(vector_lr):.6f}")
-            except Exception:
-                pass
+            if matrix_lr is not None:
+                parts.append(f"matrix_lr={float(matrix_lr):.6f}")
+            if vector_lr is not None:
+                parts.append(f"vector_lr={float(vector_lr):.6f}")
             print(" ".join(parts))
 
         if (step + 1) % cfg.training.eval_interval == 0:
@@ -457,6 +516,19 @@ def train(cfg: ExperimentConfig) -> None:
                     p.data.copy_(ema_tensor.to(p.device, dtype=p.dtype))
             val_metrics = evaluate(model, val_tokens, cfg, device, np.random.default_rng())
             print(f"step={step+1} val_loss={val_metrics['loss']:.4f} val_ppl={val_metrics['perplexity']:.2f}")
+
+            # Log validation metrics to wandb
+            if wandb_run is not None:
+                try:
+                    val_log_metrics = {
+                        "val/loss": val_metrics['loss'],
+                        "val/perplexity": val_metrics['perplexity'],
+                        "step": step + 1,
+                    }
+                    wandb_run.log(val_log_metrics)  # type: ignore
+                except Exception:
+                    pass
+
             if ema_backup is not None:
                 for name, p in model.named_parameters():
                     if name in ema_backup:
@@ -469,6 +541,27 @@ def train(cfg: ExperimentConfig) -> None:
     if cfg.checkpoint.checkpoint_dir is not None:
         ckpt_path = save_training_checkpoint(model, optimizer, cfg.training.total_steps, os.fspath(cfg.checkpoint.checkpoint_dir), cfg.checkpoint.max_to_keep)
         print(f"Saved final checkpoint to {ckpt_path}")
+
+    # Log final summary statistics
+    if wandb_run is not None:
+        try:
+            # Final memory stats
+            if torch.cuda.is_available():
+                wandb_run.summary["final/peak_memory_gb"] = torch.cuda.max_memory_allocated() / (1024**3)
+
+            # Training totals
+            wandb_run.summary["final/total_tokens_seen"] = float(seen_tokens)
+            wandb_run.summary["final/total_steps"] = cfg.training.total_steps
+
+            # Run final evaluation
+            final_val_metrics = evaluate(model, val_tokens, cfg, device, np.random.default_rng())
+            wandb_run.summary["final/val_loss"] = final_val_metrics['loss']
+            wandb_run.summary["final/val_perplexity"] = final_val_metrics['perplexity']
+            wandb_run.summary["final/val_bits_per_byte"] = final_val_metrics['loss'] / math.log(2)
+
+            print(f"Final validation: loss={final_val_metrics['loss']:.4f}, perplexity={final_val_metrics['perplexity']:.2f}")
+        except Exception as e:
+            print(f"Warning: Could not log final summary: {e}")
 
 
 def _grad_l2_norm(parameters: list[torch.nn.Parameter]) -> float:
