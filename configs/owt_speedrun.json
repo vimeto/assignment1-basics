@@ -74,7 +74,7 @@
     "train_path": "/data0/data1/owt_train.npy",
     "val_path": "/data0/data1/owt_valid.npy",
     "dtype": "uint16",
-    "bos_token_id": 50256
+    "bos_token_id": null
   },
   "checkpoint": {
     "checkpoint_dir": "./checkpoints/owt_speedrun",
