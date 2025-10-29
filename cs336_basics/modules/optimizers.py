@@ -163,6 +163,7 @@ class MuonAdamW(torch.optim.Optimizer):
                     continue
                 p, rows, cols, param_decay, original_shape, state = info
 
+                orig_norm = mat.norm().to(torch.float32)
                 mat32 = mat.to(torch.float32)
                 if rows >= cols:
                     reduce_dim = 1
@@ -178,7 +179,6 @@ class MuonAdamW(torch.optim.Optimizer):
                 state["second_moment"] = second
 
                 mat32.mul_((second + normalizer_eps) ** -0.5)
-                orig_norm = mat.norm()
                 new_norm = mat32.norm()
                 if orig_norm > 0 and new_norm > 0:
                     mat32.mul_(orig_norm / (new_norm + normalizer_eps))

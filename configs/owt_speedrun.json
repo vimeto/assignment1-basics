@@ -40,7 +40,9 @@
     "muon_lr_decay_end": 16000,
     "muon_lr_decay_start_tokens": null,
     "muon_lr_decay_end_tokens": null,
-    "muon_lr_final": 0.01
+    "muon_lr_final": 0.06,
+    "muon_lr_warmup_steps": 100,
+    "muon_lr_warmup_start": 0.006
   },
   "training": {
     "total_steps": 18000,

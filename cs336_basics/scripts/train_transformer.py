@@ -104,6 +104,8 @@ class OptimizerConfig:
     muon_lr_decay_start_tokens: int | None = None
     muon_lr_decay_end_tokens: int | None = None
     muon_lr_final: float | None = None
+    muon_lr_warmup_steps: int | None = None
+    muon_lr_warmup_start: float | None = None
 
 
 @dataclass(frozen=True)
@@ -829,6 +831,9 @@ def train(cfg: ExperimentConfig) -> None:
                     math.ceil(opt_cfg.muon_lr_decay_end_tokens / tokens_per_step),
                 )
             final_matrix_lr = opt_cfg.muon_lr_final if opt_cfg.muon_lr_final is not None else matrix_base_lr
+            warmup_steps = opt_cfg.muon_lr_warmup_steps if opt_cfg.muon_lr_warmup_steps is not None else 0
+            warmup_start_lr = opt_cfg.muon_lr_warmup_start if opt_cfg.muon_lr_warmup_start is not None else matrix_base_lr
+            matrix_lr = matrix_base_lr
             for group in optimizer.param_groups:
                 gtype = group.get("group_type")
                 if gtype == "vector":
@@ -837,14 +842,18 @@ def train(cfg: ExperimentConfig) -> None:
                     else:
                         group["lr"] = group.get("base_lr", vector_base_lr)
                 elif gtype == "matrix":
-                    matrix_lr = group.get("base_lr", matrix_base_lr)
-                    if decay_start is not None:
+                    matrix_lr_step = matrix_base_lr
+                    if warmup_steps and current_step <= warmup_steps:
+                        warm_progress = current_step / max(1, warmup_steps)
+                        matrix_lr_step = warmup_start_lr + (matrix_base_lr - warmup_start_lr) * warm_progress
+                    elif decay_start is not None:
                         if decay_end <= decay_start:
                             decay_end = decay_start + 1
                         if current_step >= decay_start:
                             progress = min(1.0, max(0.0, (current_step - decay_start) / max(1, decay_end - decay_start)))
-                            matrix_lr = matrix_base_lr + (final_matrix_lr - matrix_base_lr) * progress
-                    group["lr"] = matrix_lr
+                            matrix_lr_step = matrix_base_lr + (final_matrix_lr - matrix_base_lr) * progress
+                    group["lr"] = matrix_lr_step
+                    matrix_lr = matrix_lr_step
         else:
             if lr_sched is not None:
                 for group in optimizer.param_groups:
