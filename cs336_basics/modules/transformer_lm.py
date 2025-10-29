@@ -158,7 +158,7 @@ class TransformerLM(nn.Module):
         # Smear token embeddings forward 1 position (nanoGPT-style)
         if self.use_smear and self.smear_gate is not None:
             # Take first smear_gate_dim features from embeddings
-            gate_input = y[:, 1:, :self.smear_gate.weight.size(1)]  # (B, S-1, smear_gate_dim)
+            gate_input = y[:, 1:, :self.smear_gate.linear.size(1)]  # (B, S-1, smear_gate_dim)
             smear_gate_out = self.smear_lambda * torch.sigmoid(self.smear_gate(gate_input))  # (B, S-1, 1)
             # Add smeared previous token: y[1:] += gate * y[:-1]
             y_smeared = torch.cat([
