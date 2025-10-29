@@ -78,6 +78,14 @@ def build_model(cfg: ExperimentConfig, device: torch.device, dtype: torch.dtype)
         tie_embeddings=cfg.model.tie_embeddings,
         use_x0_mixin=cfg.model.use_x0_mixin,
         x0_gate_init=cfg.model.x0_gate_init,
+        use_value_embeddings=cfg.model.use_value_embeddings,
+        num_value_embeddings=cfg.model.num_value_embeddings,
+        value_embed_lr_mul=cfg.model.value_embed_lr_mul,
+        sa_lambda_init=cfg.model.sa_lambda_init,
+        sa_lambda_lr_mul=cfg.model.sa_lambda_lr_mul,
+        use_smear=cfg.model.use_smear,
+        smear_lambda_init=cfg.model.smear_lambda_init,
+        smear_gate_dim=cfg.model.smear_gate_dim,
     )
     # Optimizer metadata: vectors vs matrices; emb lr multipliers; tag fused qkvo
     try:

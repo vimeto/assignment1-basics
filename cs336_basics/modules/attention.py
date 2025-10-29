@@ -67,15 +67,7 @@ class MultiHeadAttention(nn.Module):
             self.k_norm = None
             self.qk_logit_scale = None
 
-        # Lightweight value residual (ResFormer-like): V <- V + gate * v_bias
-        self.v_bias = nn.Parameter(torch.zeros(self.num_heads, self.d_k, device=device, dtype=dtype))
-        self.v_bias_gate = nn.Parameter(torch.logit(torch.tensor(0.01, device=device)).to(dtype))
-        self.v_bias._optimizer_group = "vector"
-        self.v_bias_gate._optimizer_group = "vector"
-        self.v_bias._weight_decay = 0.0
-        self.v_bias_gate._weight_decay = 0.0
-
-    def forward(self, x: torch.Tensor, token_positions: torch.Tensor | None = None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, token_positions: torch.Tensor | None = None, value_embed: torch.Tensor | None = None, sa_lambda: torch.Tensor | None = None) -> torch.Tensor:
         # x: (B, S, d_model)
         B, S, _ = x.shape
 
@@ -93,9 +85,13 @@ class MultiHeadAttention(nn.Module):
             q = self.rope(q, token_positions)
             k = self.rope(k, token_positions)
 
-        # value residual (per-head, broadcast over batch/sequence)
-        gate = torch.sigmoid(self.v_bias_gate)
-        v = v + gate * self.v_bias.view(1, self.num_heads, 1, self.d_k)
+        # Mix value embeddings (nanoGPT-style): v = sa_lambdas[0] * v + sa_lambdas[1] * ve
+        if value_embed is not None and sa_lambda is not None:
+            ve = rearrange(value_embed, "b s (h d) -> b h s d", h=self.num_heads)
+            v = sa_lambda[0] * v + sa_lambda[1] * ve
+        elif sa_lambda is not None and value_embed is None:
+            # If no value embed but lambda provided, just scale v by lambda[0]
+            v = sa_lambda[0] * v
 
         if self.qk_logit_scale is not None:
             # We provide our own scale (initialized to 1/sqrt(d_k)), so keep torch's scale at 1.0.

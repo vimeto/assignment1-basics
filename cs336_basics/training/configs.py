@@ -27,6 +27,17 @@ class ModelConfig:
     use_x0_mixin: bool = True
     x0_gate_init: float = 0.1
     tie_embeddings: bool = True
+    # Value embeddings (nanoGPT-style token value embeddings)
+    use_value_embeddings: bool = False
+    num_value_embeddings: int = 3
+    value_embed_lr_mul: float = 75.0
+    # SA lambdas for mixing value and value embeddings
+    sa_lambda_init: Tuple[float, float] = (0.5, 0.5)
+    sa_lambda_lr_mul: float = 5.0
+    # Smear gate (nanoGPT-style): smears token embeddings forward 1 position
+    use_smear: bool = False
+    smear_lambda_init: float = 0.0
+    smear_gate_dim: int = 12
 
 
 @dataclass(frozen=True)
