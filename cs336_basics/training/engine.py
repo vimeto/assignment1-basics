@@ -211,7 +211,7 @@ def train(cfg: ExperimentConfig) -> None:
     use_autocast = device.type == "cuda" and cfg.training.precision.lower() in {"float16", "bfloat16"}
     amp_dtype = torch.float16 if cfg.training.precision.lower() == "float16" else torch.bfloat16
     autocast_scope = (lambda: torch.amp.autocast("cuda", dtype=amp_dtype)) if use_autocast else (lambda: nullcontext())
-    scaler = torch.cuda.amp.GradScaler(enabled=use_autocast and cfg.training.precision.lower() == "float16")
+    scaler = torch.amp.GradScaler("cuda", enabled=use_autocast and cfg.training.precision.lower() == "float16")
 
     ema_state: dict[str, torch.Tensor] | None = None
     if cfg.training.ema_decay is not None and cfg.training.ema_decay > 0.0:

@@ -16,14 +16,14 @@ import numpy as np
 import torch
 import torch.backends.cuda
 
+# Enable TF32 for Ampere+ GPUs (modern API)
 torch.set_float32_matmul_precision("high")
 if torch.cuda.is_available():
-    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cuda.matmul.fp32_precision = "tf32"
+    torch.backends.cudnn.conv.fp32_precision = "tf32"
 
-try:
-    from torch.amp import GradScaler as TorchGradScaler  # type: ignore[attr-defined]
-except (ImportError, AttributeError):  # pragma: no cover
-    from torch.cuda.amp import GradScaler as TorchGradScaler  # type: ignore
+# Use modern GradScaler API
+from torch.amp import GradScaler as TorchGradScaler
 
 from cs336_basics.modules.cross_entropy import cross_entropy
 from cs336_basics.modules.dataloader import (
