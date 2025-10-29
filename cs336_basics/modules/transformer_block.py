@@ -35,6 +35,7 @@ class TransformerBlock(nn.Module):
         self.attn = MultiHeadAttention(
             d_model, num_heads, device, dtype=dtype, rope=rope, use_rope=use_rope, use_qk_norm=use_qk_norm
         )
+        self.attn.W_qkv._is_qkvo = True
         if use_swiglu:
             self.ffn = SwiGLU(d_model, d_ff, device=device, dtype=dtype)
         else:

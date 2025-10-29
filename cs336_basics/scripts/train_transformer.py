@@ -402,6 +402,22 @@ def build_model(cfg: ExperimentConfig, device: torch.device, dtype: torch.dtype)
 
     # mark embeddings for vector optimizer treatment when using Muon
     model.embedding.embedding_table._optimizer_group = "vector"
+    try:
+        for name, p in model.named_parameters():
+            if "embedding" in name and p.ndim == 2:
+                p.lr_mul = getattr(p, "lr_mul", 1.0) * 50.0
+    except Exception:
+        pass
+
+    try:
+        for name, p in model.named_parameters():
+            lname = name.lower()
+            if p.ndim == 2 and p.shape[-1] % 4 == 0 and (
+                "qkv" in lname or "qkvo" in lname or "w_qkv" in lname or "wqkv" in lname
+            ):
+                setattr(p, "_is_qkvo", True)
+    except Exception:
+        pass
     model = model.to(device=device, dtype=dtype)
     return model
 

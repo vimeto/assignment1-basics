@@ -5,23 +5,37 @@ import torch
 import math
 
 
+# ---- Polar-Express (batched, BF16-friendly) orthogonalizer ----
+POLAR_EXPRESS_COEFFS = [
+    (8.156554524902461, -22.48329292557795, 15.878769915207462),
+    (4.042929935166739, -2.808917465908714, 0.5000178451051316),
+    (3.8916678022926607, -2.772484153217685, 0.5060648178503393),
+    (3.285753657755655, -2.3681294933425376, 0.46449024233003106),
+    (2.3465413258596377, -1.7097828382687081, 0.42323551169305323),
+]
+
+@torch.no_grad()
 def polar_express_sign(G: torch.Tensor) -> torch.Tensor:
-    """Return the orthogonal factor of the polar decomposition (matrix sign).
+    """Fast, matrix-sign approximation without SVD (Polar Express)."""
 
-    Accepts ``G`` with shape ``(..., m, n)`` and returns a tensor of the same
-    shape containing the nearest orthogonal matrix in Frobenius norm.
-    """
+    X = G
+    swapped = False
+    if X.size(-2) > X.size(-1):
+        X = X.transpose(-2, -1)
+        swapped = True
 
-    orig_was_2d = G.ndim == 2
-    if orig_was_2d:
-        G = G.unsqueeze(0)
+    Xb = X.to(torch.bfloat16)
+    spec = Xb.norm(dim=(-2, -1), keepdim=True).to(torch.float32)
+    Xb = Xb / (spec * (1.0 + 2e-2) + 1e-6)
 
-    U, _, Vh = torch.linalg.svd(G, full_matrices=False)
-    sign = U @ Vh
+    for a, b, c in POLAR_EXPRESS_COEFFS:
+        A = Xb @ Xb.transpose(-2, -1)
+        B = b * A + c * (A @ A)
+        Xb = a * Xb + B @ Xb
 
-    if orig_was_2d:
-        sign = sign[0]
-    return sign
+    if swapped:
+        Xb = Xb.transpose(-2, -1)
+    return Xb.to(G.dtype)
 
 
 class MuonAdamW(torch.optim.Optimizer):
@@ -117,16 +131,17 @@ class MuonAdamW(torch.optim.Optimizer):
         normalizer_beta = group.get("normalizer_beta", 0.95)
         normalizer_eps = group.get("normalizer_eps", 1e-10)
 
-        shape_buckets: dict[tuple[int, ...], list[torch.nn.Parameter]] = defaultdict(list)
+        shape_buckets: dict[tuple[tuple[int, ...], bool], list[torch.nn.Parameter]] = defaultdict(list)
         for p in group["params"]:
             if p.grad is None:
                 continue
             if p.grad.ndim < 2:
                 # these parameters should generally live in the vector group
                 continue
-            shape_buckets[tuple(p.grad.shape)].append(p)
+            is_qkvo = bool(getattr(p, "_is_qkvo", False))
+            shape_buckets[(tuple(p.grad.shape), is_qkvo)].append(p)
 
-        for params in shape_buckets.values():
+        for (shape, is_qkvo_batch), params in shape_buckets.items():
             stacked_updates = []
             infos = []
             for p in params:
@@ -156,7 +171,21 @@ class MuonAdamW(torch.optim.Optimizer):
                 continue
 
             update_batch = torch.stack(stacked_updates)
-            orth_updates = polar_express_sign(update_batch)
+
+            if is_qkvo_batch:
+                B, r, c = update_batch.shape
+                if c % 4 == 0:
+                    reshaped = update_batch.view(B * 4, r, c // 4)
+                    orth = polar_express_sign(reshaped)
+                    orth_updates = orth.view(B, 4, r, c // 4).reshape(B, r, c)
+                elif r % 4 == 0:
+                    reshaped = update_batch.view(B * 4, r // 4, c)
+                    orth = polar_express_sign(reshaped)
+                    orth_updates = orth.view(B, 4, r // 4, c).reshape(B, r, c)
+                else:
+                    orth_updates = polar_express_sign(update_batch)
+            else:
+                orth_updates = polar_express_sign(update_batch)
 
             for mat, info in zip(orth_updates, infos):
                 if info is None:

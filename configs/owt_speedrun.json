@@ -51,7 +51,7 @@
     "seed": 7,
     "device": "cuda",
     "precision": "bfloat16",
-    "grad_clip_norm": 1.5,
+    "grad_clip_norm": null,
     "step_interval": 1,
     "eval_interval": 100,
     "eval_batches": 32,
