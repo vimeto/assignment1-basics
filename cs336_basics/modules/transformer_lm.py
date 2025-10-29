@@ -66,8 +66,6 @@ class TransformerLM(nn.Module):
         if self.use_smear:
             self.smear_gate = Linear(smear_gate_dim, 1, device=device, dtype=dtype)
             self.smear_gate.linear.data.zero_()
-            if self.smear_gate.bias is not None:
-                self.smear_gate.bias.data.zero_()
             self.smear_lambda = nn.Parameter(torch.tensor([smear_lambda_init], device=device, dtype=dtype))
             self.smear_gate.linear._optimizer_group = "vector"
             self.smear_lambda._optimizer_group = "vector"
