@@ -71,7 +71,7 @@ fi
 
 # Run the training script with uv
 echo "Starting training..."
-uv run python cs336_basics/scripts/train_transformer.py \
+uv run python cs336_basics/scripts/train.py \
     --config "$CONFIG_FILE" \
     --wandb-run-name "$CONFIG_NAME" \
     2>&1 | tee "logs/training_${SLURM_JOB_ID}.log"

@@ -26,12 +26,16 @@ class QKNorm(nn.Module):
         self.weight._optimizer_group = "vector"
         self.weight._weight_decay = 0.0
         self.weight.wd_mul = 0.0
-        self.weight._weight_decay = 0.0
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x: (B, H, S, D)
-        # use torch RMSNorm (weight applied manually for per-head gamma)
-        y = F.rms_norm(x, (self.dim,), weight=None, eps=self.eps)
+        # x: (B, H, S, D). Normalize along the last dim with RMSNorm kernel, then apply per-head gamma.
+        # Use F.rms_norm with weight=None to compute pure normalization, then scale by our learnable weight.
+        if hasattr(F, "rms_norm"):
+            y = F.rms_norm(x, (self.dim,), weight=None, eps=self.eps)
+        else:
+            x32 = x.to(torch.float32)
+            denom = torch.sqrt(x32.pow(2).mean(dim=-1, keepdim=True) + self.eps)
+            y = x / denom.to(x.dtype)
         if self.num_heads is not None:
             return y * self.weight.view(1, self.num_heads, 1, self.dim)
         else:
