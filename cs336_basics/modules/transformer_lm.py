@@ -65,17 +65,17 @@ class TransformerLM(nn.Module):
         # Smear gate: smears token embeddings forward 1 position (nanoGPT-style)
         if self.use_smear:
             self.smear_gate = Linear(smear_gate_dim, 1, device=device, dtype=dtype)
-            self.smear_gate.weight.data.zero_()
+            self.smear_gate.linear.data.zero_()
             if self.smear_gate.bias is not None:
                 self.smear_gate.bias.data.zero_()
             self.smear_lambda = nn.Parameter(torch.tensor([smear_lambda_init], device=device, dtype=dtype))
-            self.smear_gate.weight._optimizer_group = "vector"
+            self.smear_gate.linear._optimizer_group = "vector"
             self.smear_lambda._optimizer_group = "vector"
-            self.smear_gate.weight._weight_decay = 0.0
+            self.smear_gate.linear._weight_decay = 0.0
             self.smear_lambda._weight_decay = 0.0
-            self.smear_gate.weight.wd_mul = 0.0
+            self.smear_gate.linear.wd_mul = 0.0
             self.smear_lambda.wd_mul = 0.0
-            self.smear_gate.weight.lr_mul = 5.0
+            self.smear_gate.linear.lr_mul = 5.0
             self.smear_lambda.lr_mul = 5.0
         else:
             self.smear_gate = None
