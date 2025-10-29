@@ -66,9 +66,9 @@
     "persistent_workers": true,
     "align_to_bos": true,
     "compile_warmup_steps": 20,
-    "ema_decay": 0.995,
+    "ema_decay": null,
     "ema_update_interval": 1,
-    "use_ema_for_eval": true
+    "use_ema_for_eval": false
   },
   "data": {
     "train_path": "/data0/data1/owt_train.npy",

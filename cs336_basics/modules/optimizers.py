@@ -48,6 +48,8 @@ class MuonAdamW(torch.optim.Optimizer):
         vector_eps: float = 1e-8,
         matrix_base_lr: float | None = None,
         vector_base_lr: float | None = None,
+        normalizer_beta: float = 0.95,
+        normalizer_eps: float = 1e-10,
     ) -> None:
 
         self.matrix_params: list[torch.nn.Parameter] = []
@@ -81,6 +83,8 @@ class MuonAdamW(torch.optim.Optimizer):
                 "weight_decay": matrix_wd,
                 "lr": matrix_base_lr,
                 "base_lr": matrix_base_lr,
+                "normalizer_beta": normalizer_beta,
+                "normalizer_eps": normalizer_eps,
             })
         if self.vector_params:
             param_groups.append({
@@ -110,6 +114,8 @@ class MuonAdamW(torch.optim.Optimizer):
         base_lr = group["lr"]
         weight_decay = group.get("weight_decay", 0.0)
         momentum = group.get("momentum", 0.95)
+        normalizer_beta = group.get("normalizer_beta", 0.95)
+        normalizer_eps = group.get("normalizer_eps", 1e-10)
 
         shape_buckets: dict[tuple[int, ...], list[torch.nn.Parameter]] = defaultdict(list)
         for p in group["params"]:
@@ -144,7 +150,7 @@ class MuonAdamW(torch.optim.Optimizer):
 
                 update_matrix = grad_matrix.lerp(buf_matrix, momentum)
                 stacked_updates.append(update_matrix)
-                infos.append((p, rows, cols, param_decay, grad.shape))
+                infos.append((p, rows, cols, param_decay, grad.shape, state))
 
             if not stacked_updates:
                 continue
@@ -153,13 +159,36 @@ class MuonAdamW(torch.optim.Optimizer):
             orth_updates = polar_express_sign(update_batch)
 
             for mat, info in zip(orth_updates, infos):
-                p, rows, cols, param_decay, original_shape = info
+                if info is None:
+                    continue
+                p, rows, cols, param_decay, original_shape, state = info
+
+                mat32 = mat.to(torch.float32)
+                if rows >= cols:
+                    reduce_dim = 1
+                    moment_shape = (rows, 1)
+                else:
+                    reduce_dim = 0
+                    moment_shape = (1, cols)
+                moment = mat32.pow(2).mean(dim=reduce_dim, keepdim=True)
+                second = state.get("second_moment")
+                if second is None or second.shape != moment_shape:
+                    second = torch.zeros(moment_shape, dtype=torch.float32, device=mat32.device)
+                second.mul_(normalizer_beta).add_(moment, alpha=1 - normalizer_beta)
+                state["second_moment"] = second
+
+                mat32.mul_((second + normalizer_eps) ** -0.5)
+                orig_norm = mat.norm()
+                new_norm = mat32.norm()
+                if orig_norm > 0 and new_norm > 0:
+                    mat32.mul_(orig_norm / (new_norm + normalizer_eps))
+
                 aspect = math.sqrt(max(1.0, rows / float(cols)))
                 lr_mul = getattr(p, "lr_mul", 1.0)
                 eff_lr = base_lr * aspect * lr_mul
                 wd_mul = getattr(p, "wd_mul", 1.0)
 
-                update_tensor = mat.reshape(original_shape).to(p.data.dtype)
+                update_tensor = mat32.reshape(original_shape).to(p.data.dtype)
                 p.data.add_(update_tensor, alpha=-eff_lr)
 
                 if param_decay != 0:
