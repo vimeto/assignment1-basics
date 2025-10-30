@@ -17,7 +17,7 @@ class Embedding(nn.Module):
         self.embedding_table = nn.Parameter(weight)
         self.embedding_table._optimizer_group = "vector"
         self.embedding_table._weight_decay = 0.0
-        self.embedding_table.lr_mul = 5.0
+        self.embedding_table.lr_mul = 75.0
         self.embedding_table.wd_mul = 0.0
         self.embedding_table._weight_decay = 0.0
 

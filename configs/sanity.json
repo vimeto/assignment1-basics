@@ -42,7 +42,10 @@
     "logit_softcap": null,
     "z_loss_weight": 0.0,
     "softcap_warmup_steps": 100,
-    "zloss_warmup_steps": 100
+    "zloss_warmup_steps": 100,
+    "num_workers": 0,
+    "pin_memory": false,
+    "persistent_workers": false
   },
   "data": {
     "train_path": "data/tiny_train.npy",

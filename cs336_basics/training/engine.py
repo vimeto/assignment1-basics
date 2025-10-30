@@ -21,6 +21,11 @@ from cs336_basics.modules.cross_entropy import cross_entropy
 from cs336_basics.modules.checkpointing import save_checkpoint as module_save_checkpoint, load_checkpoint as module_load_checkpoint
 from cs336_basics.modules.gradient import gradient_clipping
 
+try:
+    from torch.amp import GradScaler as TorchGradScaler
+except (ImportError, AttributeError):  # torch < 2.3 fallback
+    from torch.cuda.amp import GradScaler as TorchGradScaler  # type: ignore
+
 
 TORCH_PRECISIONS = {
     "float32": torch.float32,
@@ -90,9 +95,7 @@ def build_model(cfg: ExperimentConfig, device: torch.device, dtype: torch.dtype)
     # Optimizer metadata: vectors vs matrices; emb lr multipliers; tag fused qkvo
     try:
         model.embedding.embedding_table._optimizer_group = "vector"
-        for name, p in model.named_parameters():
-            if "embedding" in name and p.ndim == 2:
-                p.lr_mul = getattr(p, "lr_mul", 1.0) * 50.0
+        # Embedding modules configure their own learning-rate multipliers.
         for name, p in model.named_parameters():
             lname = name.lower()
             looks_fused = p.ndim == 2 and (p.shape[-1] % 4 == 0)
@@ -104,11 +107,6 @@ def build_model(cfg: ExperimentConfig, device: torch.device, dtype: torch.dtype)
         pass
     model = model.to(device=device, dtype=dtype)
     return model
-
-
-def _apply_softcap_eval(logits: torch.Tensor, cap: float) -> torch.Tensor:
-    scale = cap * 2.0
-    return scale * torch.sigmoid(logits / (scale / 4.0))
 
 
 def evaluate(
@@ -132,6 +130,7 @@ def evaluate(
         num_workers=cfg.training.num_workers,
         pin_memory=cfg.training.pin_memory,
         persistent_workers=cfg.training.persistent_workers,
+        num_batches=cfg.training.eval_batches,
     )
     with torch.no_grad():
         for X_cpu, Y_cpu in loader:
@@ -139,8 +138,6 @@ def evaluate(
             Y = Y_cpu.to(device, non_blocking=True) if device.type == "cuda" else Y_cpu.to(device)
             with (torch.amp.autocast("cuda", dtype=amp_dtype) if use_autocast else nullcontext()):
                 logits = model(X)
-                if cfg.training.logit_softcap is not None:
-                    logits = _apply_softcap_eval(logits, float(cfg.training.logit_softcap))
                 loss = cross_entropy(logits.reshape(-1, logits.size(-1)), Y.reshape(-1))
             losses.append(float(loss.item()))
     if original_mode:
@@ -205,13 +202,19 @@ def train(cfg: ExperimentConfig) -> None:
         num_workers=cfg.training.num_workers,
         pin_memory=cfg.training.pin_memory,
         persistent_workers=cfg.training.persistent_workers,
+        boundary_token_id=getattr(cfg.data, "bos_token_id", None),
+        start_after_token=True,
+        use_strided_sampler=False,
     )
     train_iter = iter(train_loader)
 
     use_autocast = device.type == "cuda" and cfg.training.precision.lower() in {"float16", "bfloat16"}
     amp_dtype = torch.float16 if cfg.training.precision.lower() == "float16" else torch.bfloat16
     autocast_scope = (lambda: torch.amp.autocast("cuda", dtype=amp_dtype)) if use_autocast else (lambda: nullcontext())
-    scaler = torch.amp.GradScaler("cuda", enabled=use_autocast and cfg.training.precision.lower() == "float16")
+    scaler = TorchGradScaler(
+        "cuda",
+        enabled=use_autocast and cfg.training.precision.lower() == "float16",
+    )
 
     ema_state: dict[str, torch.Tensor] | None = None
     if cfg.training.ema_decay is not None and cfg.training.ema_decay > 0.0:
@@ -577,4 +580,3 @@ def _grad_l2_norm(parameters: list[torch.nn.Parameter]) -> float:
     if total is None:
         return 0.0
     return float(torch.sqrt(total).cpu())
-

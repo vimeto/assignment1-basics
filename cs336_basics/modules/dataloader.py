@@ -15,6 +15,7 @@ __all__ = [
     "StridedSampler",
     "RandomizedStridedIndexSampler",
     "BOSAlignedSampler",
+    "BoundaryAlignedSampler",
     "DevicePrefetcher",
 ]
 
@@ -145,6 +146,109 @@ class BOSAlignedSampler(Sampler[int]):
             offset += valid.size
         write_mm.flush()
         del write_mm
+        self._tmpfile = tmp.name
+        self.starts = np.memmap(self._tmpfile, dtype=np.int64, mode="r")
+
+    def __iter__(self):
+        N = int(len(self.starts))
+        if N == 0:
+            return iter([])
+        stride = int(self.rng.integers(1, N))
+        while math.gcd(stride, N) != 1:
+            stride = int(self.rng.integers(1, N))
+        offset = int(self.rng.integers(0, N))
+
+        def generator():
+            for i in range(N):
+                idx = (offset + stride * i) % N
+                yield int(self.starts[idx])
+
+        return generator()
+
+    def __len__(self) -> int:
+        return int(self.starts.shape[0])
+
+    def __del__(self):
+        if getattr(self, "_tmpfile", None) is not None:
+            try:
+                os.remove(self._tmpfile)
+            except OSError:
+                pass
+
+
+class BoundaryAlignedSampler(Sampler[int]):
+    """Sample start indices right after a boundary token."""
+
+    def __init__(
+        self,
+        tokens: npt.NDArray[np.integer],
+        context_length: int,
+        boundary_token_id: int,
+        rng: np.random.Generator | None = None,
+        *,
+        start_after: bool = True,
+        chunk_size: int = 10_000_000,
+    ) -> None:
+        self.rng = rng or np.random.default_rng()
+        arr = tokens if isinstance(tokens, np.memmap) or isinstance(getattr(tokens, "base", None), np.memmap) else np.asarray(tokens)
+        self.size = int(arr.size)
+        self.context_length = int(context_length)
+        if self.size <= 0:
+            self.starts = np.empty((0,), dtype=np.int64)
+            self._tmpfile = None
+            return
+
+        b_id = np.array(boundary_token_id, dtype=arr.dtype).item()
+        chunk = max(int(chunk_size), self.context_length + 1)
+
+        counts = 0
+        include_zero = 0 + self.context_length < self.size
+        for start in range(0, self.size, chunk):
+            stop = min(self.size, start + chunk)
+            chunk_arr = arr[start:stop]
+            matches = np.flatnonzero(chunk_arr == b_id)
+            if matches.size == 0:
+                continue
+            if start_after:
+                starts_local = matches.astype(np.int64) + 1 + start
+            else:
+                starts_local = matches.astype(np.int64) + start
+            valid = starts_local[starts_local + self.context_length < self.size]
+            counts += int(valid.size)
+
+        if include_zero:
+            counts += 1
+
+        if counts == 0:
+            self.starts = np.empty((0,), dtype=np.int64)
+            self._tmpfile = None
+            return
+
+        tmp = tempfile.NamedTemporaryFile(prefix="boundary_idx_", suffix=".dat", delete=False)
+        tmp.close()
+        write_mm = np.memmap(tmp.name, dtype=np.int64, mode="w+", shape=(counts,))
+        offset = 0
+        if include_zero:
+            write_mm[offset] = 0
+            offset += 1
+        for start in range(0, self.size, chunk):
+            stop = min(self.size, start + chunk)
+            chunk_arr = arr[start:stop]
+            matches = np.flatnonzero(chunk_arr == b_id)
+            if matches.size == 0:
+                continue
+            if start_after:
+                starts_local = matches.astype(np.int64) + 1 + start
+            else:
+                starts_local = matches.astype(np.int64) + start
+            valid = starts_local[starts_local + self.context_length < self.size]
+            if valid.size == 0:
+                continue
+            write_mm[offset : offset + valid.size] = valid
+            offset += valid.size
+        write_mm.flush()
+        del write_mm
+
         self._tmpfile = tmp.name
         self.starts = np.memmap(self._tmpfile, dtype=np.int64, mode="r")
 
