@@ -32,7 +32,7 @@ def build_optimizer(cfg, parameters: Iterable[torch.nn.Parameter], base_lr: floa
         matrix_wd = opt_cfg.matrix_weight_decay if opt_cfg.matrix_weight_decay is not None else opt_cfg.weight_decay
         vector_wd = opt_cfg.vector_weight_decay if opt_cfg.vector_weight_decay is not None else 0.0
         matrix_lr = opt_cfg.matrix_base_lr if opt_cfg.matrix_base_lr is not None else opt_cfg.lr
-        vector_lr = opt_cfg.vector_base_lr if opt_cfg.vector_base_lr is not None else opt_cfg.lr
+        vector_lr = opt_cfg.vector_base_lr if opt_cfg.vector_base_lr is not None else matrix_lr * float(getattr(opt_cfg, "vector_lr_ratio", 0.1))
         optimizer = MuonAdamW(
             parameters,
             lr=base_lr,
@@ -52,6 +52,7 @@ def build_optimizer(cfg, parameters: Iterable[torch.nn.Parameter], base_lr: floa
         )
         setattr(optimizer, "_matrix_base_lr", matrix_lr)
         setattr(optimizer, "_vector_base_lr", vector_lr)
+        setattr(optimizer, "_vector_lr_ratio", float(getattr(opt_cfg, "vector_lr_ratio", vector_lr / max(matrix_lr, 1e-12))))
         return optimizer
     raise ValueError(f"Unsupported optimizer: {opt_cfg.name}")
 

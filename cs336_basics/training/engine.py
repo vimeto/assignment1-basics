@@ -4,17 +4,14 @@ import math
 import os
 from contextlib import nullcontext
 from typing import Any
+import time
 
 import numpy as np
 import torch
 
 from cs336_basics.training.configs import ExperimentConfig
 from cs336_basics.training.optim import build_optimizer, zero_grads_for
-from cs336_basics.training.schedules import (
-    learning_rate_schedule as cosine_with_warmup,
-    linear_warmup_decay,
-    trapezoid_schedule,
-)
+from cs336_basics.training.schedules import trapezoid_schedule
 from cs336_basics.training.data import build_train_loader, build_eval_loader
 from cs336_basics.modules.transformer_lm import TransformerLM
 from cs336_basics.modules.cross_entropy import cross_entropy
@@ -105,6 +102,12 @@ def build_model(cfg: ExperimentConfig, device: torch.device, dtype: torch.dtype)
                 setattr(p, "_is_qkvo", True)
     except Exception:
         pass
+    for _, p in model.named_parameters():
+        if hasattr(p, "lr_mul") and not hasattr(p, "lr_mul_base"):
+            try:
+                p.lr_mul_base = float(p.lr_mul)
+            except Exception:
+                p.lr_mul_base = 1.0
     model = model.to(device=device, dtype=dtype)
     return model
 
@@ -228,11 +231,18 @@ def train(cfg: ExperimentConfig) -> None:
 
     grad_accum_schedule = list(cfg.training.grad_accum_schedule or ())
     grad_accum_schedule.sort(key=lambda pair: pair[0])
+    grad_accum_minutes = list(cfg.training.grad_accum_minutes_schedule or ())
+    grad_accum_minutes.sort(key=lambda pair: pair[0])
 
-    def resolve_grad_accum(step_idx: int) -> int:
+    def resolve_grad_accum(step_idx: int, minutes_elapsed: float) -> int:
         value = grad_accum_default
         for boundary, target in grad_accum_schedule:
             if step_idx >= boundary:
+                value = max(1, int(target))
+            else:
+                break
+        for minute_boundary, target in grad_accum_minutes:
+            if minutes_elapsed >= minute_boundary:
                 value = max(1, int(target))
             else:
                 break
@@ -258,13 +268,6 @@ def train(cfg: ExperimentConfig) -> None:
     softcap_warmup_tokens = resolve_tokens(cfg.training.softcap_warmup_steps, cfg.training.softcap_warmup_tokens)
     zloss_warmup_tokens = resolve_tokens(cfg.training.zloss_warmup_steps, cfg.training.zloss_warmup_tokens)
 
-    sched = cfg.lr_schedule
-    lr_warmup_tokens = resolve_tokens(sched.warmup_steps, sched.warmup_tokens)
-    cosine_default_tokens = planned_total_tokens
-    if sched.cosine_steps is not None:
-        cosine_default_tokens = tokens_from_steps(sched.cosine_steps)
-    lr_cosine_tokens = float(sched.cosine_tokens) if sched.cosine_tokens is not None else float(cosine_default_tokens)
-    lr_decay_tokens = float(sched.decay_tokens) if sched.decay_tokens is not None else float(planned_total_tokens)
 
     opt_cfg = cfg.optimizer
     muon_lr_warmup_tokens = resolve_tokens(opt_cfg.muon_lr_warmup_steps, opt_cfg.muon_lr_warmup_tokens)
@@ -273,6 +276,21 @@ def train(cfg: ExperimentConfig) -> None:
 
     muon_momentum_warm_tokens = resolve_tokens(opt_cfg.muon_warmup_steps, opt_cfg.muon_momentum_warmup_tokens)
     muon_momentum_cool_tokens = resolve_tokens(opt_cfg.muon_momentum_cooldown_steps, opt_cfg.muon_momentum_cooldown_tokens)
+
+    def update_lr_multipliers(accum: int) -> None:
+        denom = math.log2(max(accum, 2))
+        factor = 1.0 / max(denom, 1.0)
+        for p in model_params:
+            base = getattr(p, "lr_mul_base", None)
+            if base is not None:
+                p.lr_mul = float(base) * factor
+            elif hasattr(p, "lr_mul"):
+                try:
+                    base_val = float(p.lr_mul)
+                except Exception:
+                    base_val = 1.0
+                p.lr_mul_base = base_val
+                p.lr_mul = float(p.lr_mul_base) * factor
 
     seen_tokens = 0
     start_step = 0
@@ -310,46 +328,27 @@ def train(cfg: ExperimentConfig) -> None:
         scale = t_eff * 2.0
         return scale * torch.sigmoid(logits / (scale / 4.0))
 
+    train_start_time = time.perf_counter()
+    previous_grad_accum: int | None = None
+
     for step in range(start_step, cfg.training.total_steps):
         current_step = step + 1
-        current_grad_accum = resolve_grad_accum(step)
+        minutes_elapsed = (time.perf_counter() - train_start_time) / 60.0
+        current_grad_accum = resolve_grad_accum(step, minutes_elapsed)
+        if previous_grad_accum != current_grad_accum:
+            update_lr_multipliers(current_grad_accum)
+            previous_grad_accum = current_grad_accum
         tokens_this_step = batch_tokens * current_grad_accum
         tokens_for_schedule = seen_tokens + tokens_this_step
         virtual_step = tokens_for_schedule / reference_tokens_per_step
 
-        # Learning-rate scheduling (global or Muon vector group)
-        lr_sched = None
-        sched = cfg.lr_schedule
-        if sched.enabled:
-            warmup_virtual = lr_warmup_tokens / reference_tokens_per_step
-            warmup_virtual = max(0.0, warmup_virtual)
-            if sched.schedule_type in {"linear", "linear_to_zero"}:
-                total_schedule_virtual = lr_decay_tokens / reference_tokens_per_step
-                total_schedule_virtual = max(warmup_virtual + 1e-6, total_schedule_virtual)
-                lr_sched = linear_warmup_decay(
-                    virtual_step,
-                    sched.alpha_max or base_lr,
-                    warmup_virtual,
-                    total_schedule_virtual,
-                )
-            else:
-                alpha_max = sched.alpha_max if sched.alpha_max is not None else base_lr
-                alpha_min = sched.alpha_min if sched.alpha_min is not None else alpha_max
-                cosine_virtual = lr_cosine_tokens / reference_tokens_per_step
-                cosine_virtual = max(warmup_virtual + 1e-6, cosine_virtual)
-                lr_sched = cosine_with_warmup(
-                    virtual_step,
-                    alpha_max,
-                    alpha_min,
-                    warmup_virtual,
-                    cosine_virtual,
-                )
+        # Muon-specific LR scheduling drives both matrix and vector learning rates
+        opt_cfg = cfg.optimizer
+        matrix_base_lr = getattr(optimizer, "_matrix_base_lr", opt_cfg.matrix_base_lr or base_lr)
+        vector_ratio = float(getattr(optimizer, "_vector_lr_ratio", getattr(opt_cfg, "vector_lr_ratio", 0.1)))
+        has_matrix_group = any(g.get("group_type") == "matrix" for g in optimizer.param_groups)
 
-        # Muon-specific LR scheduling
-        if any(g.get("group_type") == "matrix" for g in optimizer.param_groups):
-            opt_cfg = cfg.optimizer
-            matrix_base_lr = getattr(optimizer, "_matrix_base_lr", opt_cfg.matrix_base_lr or base_lr)
-            vector_base_lr = getattr(optimizer, "_vector_base_lr", opt_cfg.vector_base_lr or base_lr)
+        if has_matrix_group:
 
             decay_start_tokens = muon_lr_decay_start_tokens
             decay_end_tokens = muon_lr_decay_end_tokens
@@ -371,16 +370,22 @@ def train(cfg: ExperimentConfig) -> None:
                     cooldown_steps=cooldown_tokens / reference_tokens_per_step,
                 )
 
+            vector_lr_step = matrix_lr_step * vector_ratio
             for group in optimizer.param_groups:
                 gtype = group.get("group_type")
-                if gtype == "vector":
-                    group["lr"] = lr_sched if lr_sched is not None else group.get("base_lr", vector_base_lr)
-                elif gtype == "matrix":
+                if gtype == "matrix":
                     group["lr"] = matrix_lr_step
+                else:
+                    group["lr"] = vector_lr_step
         else:
-            if lr_sched is not None:
-                for group in optimizer.param_groups:
-                    group["lr"] = lr_sched
+            fallback_matrix_lr = matrix_base_lr
+            vector_lr_step = fallback_matrix_lr * vector_ratio
+            for group in optimizer.param_groups:
+                gtype = group.get("group_type")
+                if gtype == "matrix":
+                    group["lr"] = fallback_matrix_lr
+                else:
+                    group["lr"] = vector_lr_step
 
         # Momentum schedule for Muon matrices
         if isinstance(optimizer, torch.optim.Optimizer):
@@ -525,9 +530,10 @@ def train(cfg: ExperimentConfig) -> None:
             except Exception:
                 pass
 
-            # Learning rate schedule progress
-            if lr_sched is not None:
-                metrics["schedule/lr_multiplier"] = float(lr_sched) if isinstance(lr_sched, (int, float)) else 1.0
+            # Learning rate schedule progress (relative to base matrix lr)
+            matrix_base_lr = getattr(optimizer, "_matrix_base_lr", opt_cfg.matrix_base_lr or base_lr)
+            if matrix_lr is not None and matrix_base_lr not in (None, 0.0):
+                metrics["schedule/lr_multiplier"] = float(matrix_lr / matrix_base_lr)
 
             # Training progress
             metrics["progress/step"] = step + 1

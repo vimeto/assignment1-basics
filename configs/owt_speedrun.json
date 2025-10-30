@@ -1,58 +1,37 @@
 {
   "model": {
-    "vocab_size": 32000,
     "context_length": 1024,
     "d_model": 768,
     "num_layers": 12,
     "num_heads": 6,
     "d_ff": 3072,
-    "rope_theta": 10000.0,
     "use_qk_norm": true,
     "use_unet_residual": true,
     "unet_gate_init": -1.5,
-    "use_swiglu": false,
-    "use_rmsnorm": true,
-    "use_pre_norm": true,
-    "use_post_norm": false,
-    "use_rope": true,
     "use_x0_mixin": false,
     "tie_embeddings": false,
     "use_value_embeddings": true,
-    "num_value_embeddings": 3,
-    "value_embed_lr_mul": 75.0,
-    "sa_lambda_init": [0.5, 0.5],
-    "sa_lambda_lr_mul": 5.0,
-    "use_smear": true,
-    "smear_lambda_init": 0.0,
-    "smear_gate_dim": 12
+    "use_smear": true
   },
   "optimizer": {
     "name": "muon",
     "lr": 0.008,
-    "betas": [0.9, 0.999],
-    "eps": 1e-8,
     "weight_decay": 0.01,
     "matrix_weight_decay": 0.01,
     "vector_weight_decay": 0.01,
-    "vector_lr_multiplier": 1.0,
+    "matrix_base_lr": 0.06,
+    "vector_lr_ratio": 0.1,
     "muon_momentum": 0.95,
     "muon_momentum_min": 0.85,
     "muon_momentum_max": 0.95,
     "muon_warmup_steps": 150,
     "muon_momentum_cooldown_steps": 150,
     "muon_ns_steps": 5,
-    "matrix_base_lr": 0.06,
-    "vector_base_lr": 0.008,
-    "muon_lr_decay_start": null,
-    "muon_lr_decay_end": null,
-    "muon_lr_decay_start_tokens": 500000000,
-    "muon_lr_decay_end_tokens": 650000000,
+    "muon_lr_decay_start_tokens": 400000000,
+    "muon_lr_decay_end_tokens": 1000000000,
     "muon_lr_final": 0.01,
-    "muon_lr_warmup_steps": 0,
-    "muon_lr_warmup_start": 0.01,
-    "muon_lr_warmup_tokens": 0,
-    "muon_momentum_warmup_tokens": 75000000,
-    "muon_momentum_cooldown_tokens": 75000000
+    "muon_momentum_warmup_tokens": 100000000,
+    "muon_momentum_cooldown_tokens": 100000000
   },
   "training": {
     "total_steps": 2000,
@@ -62,14 +41,9 @@
     "seed": 7,
     "device": "cuda",
     "precision": "bfloat16",
-    "grad_clip_norm": null,
-    "step_interval": 1,
     "eval_interval": 100,
     "eval_batches": 32,
-    "eval_batch_size": 32,
     "use_torch_compile": true,
-    "compile_mode": "default",
-    "use_gradient_checkpointing": false,
     "logit_softcap": 20.0,
     "z_loss_weight": 1e-5,
     "softcap_warmup_steps": 0,
@@ -79,24 +53,20 @@
     "num_workers": 4,
     "pin_memory": true,
     "persistent_workers": true,
-    "align_to_bos": false,
     "compile_warmup_steps": 5,
-    "ema_decay": null,
-    "ema_update_interval": 1,
-    "use_ema_for_eval": false,
-    "grad_accum_schedule": [
-      {"step": 0, "value": 2},
-      {"step": 100, "value": 4},
-      {"step": 250, "value": 8},
-      {"step": 500, "value": 16},
-      {"step": 750, "value": 32}
+    "grad_accum_minutes_schedule": [
+      {"minute": 0, "value": 1},
+      {"minute": 10, "value": 2},
+      {"minute": 25, "value": 4},
+      {"minute": 40, "value": 8},
+      {"minute": 55, "value": 16},
+      {"minute": 75, "value": 32}
     ]
   },
   "data": {
     "train_path": "/data0/data1/owt_train.npy",
     "val_path": "/data0/data1/owt_valid.npy",
-    "dtype": "uint16",
-    "bos_token_id": null
+    "dtype": "uint16"
   },
   "checkpoint": {
     "checkpoint_dir": "./checkpoints/owt_speedrun",
@@ -109,16 +79,5 @@
     "project": "cs336-owt",
     "entity": "vilhelm-toivonen-helsinki-university",
     "run_name": "owt_speedrun"
-  },
-  "lr_schedule": {
-    "enabled": true,
-    "schedule_type": "cosine",
-    "alpha_max": 0.008,
-    "alpha_min": 0.0008,
-    "warmup_steps": 0,
-    "cosine_steps": null,
-    "warmup_tokens": 0,
-    "decay_tokens": null,
-    "cosine_tokens": 75000000
   }
 }

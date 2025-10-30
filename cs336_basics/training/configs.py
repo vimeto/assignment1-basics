@@ -30,7 +30,7 @@ class ModelConfig:
     # Value embeddings (nanoGPT-style token value embeddings)
     use_value_embeddings: bool = False
     num_value_embeddings: int = 3
-    value_embed_lr_mul: float = 75.0
+    value_embed_lr_mul: float = 50.0
     # SA lambdas for mixing value and value embeddings
     sa_lambda_init: Tuple[float, float] = (0.5, 0.5)
     sa_lambda_lr_mul: float = 5.0
@@ -51,6 +51,7 @@ class OptimizerConfig:
     vector_weight_decay: float | None = None
     dtype: str | None = None
     vector_lr_multiplier: float = 1.0
+    vector_lr_ratio: float = 0.1
     muon_momentum: float = 0.95
     muon_momentum_min: float | None = None
     muon_momentum_max: float | None = None
@@ -101,6 +102,7 @@ class TrainingConfig:
     use_ema_for_eval: bool = False
     grad_accum_reference: int | None = None
     grad_accum_schedule: tuple[tuple[int, int], ...] | None = None
+    grad_accum_minutes_schedule: tuple[tuple[float, int], ...] | None = None
     softcap_warmup_tokens: int | None = None
     zloss_warmup_tokens: int | None = None
 
@@ -206,6 +208,9 @@ def _coerce_config_types(cfg: ExperimentConfig) -> ExperimentConfig:
         value = getattr(opt, field_name, None)
         if value is not None:
             opt_kwargs[field_name] = int(value)
+    ratio = getattr(opt, "vector_lr_ratio", None)
+    if ratio is not None:
+        opt_kwargs["vector_lr_ratio"] = float(ratio)
     if opt_kwargs:
         cfg = dataclasses.replace(cfg, optimizer=dataclasses.replace(opt, **opt_kwargs))
 
@@ -230,6 +235,19 @@ def _coerce_config_types(cfg: ExperimentConfig) -> ExperimentConfig:
                 normalized.append((step_val, max(1, value_val)))
         normalized.sort(key=lambda pair: pair[0])
         training_kwargs["grad_accum_schedule"] = tuple(normalized)
+    if training.grad_accum_minutes_schedule is not None:
+        normalized_minutes: list[tuple[float, int]] = []
+        for item in training.grad_accum_minutes_schedule:
+            if isinstance(item, dict):
+                minute = float(item.get("minute") or item.get("minutes") or item.get("time") or item.get("start") or 0.0)
+                value = int(item.get("value") or item.get("grad_accum") or item.get("accum") or item.get("accumulation") or 0)
+                normalized_minutes.append((minute, max(1, value)))
+            elif isinstance(item, (list, tuple)) and len(item) >= 2:
+                minute = float(item[0])
+                value = int(item[1])
+                normalized_minutes.append((minute, max(1, value)))
+        normalized_minutes.sort(key=lambda pair: pair[0])
+        training_kwargs["grad_accum_minutes_schedule"] = tuple(normalized_minutes)
     if training_kwargs:
         cfg = dataclasses.replace(cfg, training=dataclasses.replace(training, **training_kwargs))
     return cfg
