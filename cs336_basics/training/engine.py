@@ -222,13 +222,57 @@ def train(cfg: ExperimentConfig) -> None:
     ema_decay = cfg.training.ema_decay
     ema_update_every = max(1, int(cfg.training.ema_update_interval))
 
-    grad_accum_steps = max(1, cfg.training.grad_accum_steps)
-    if cfg.training.step_interval and cfg.training.step_interval > 1 and grad_accum_steps == 1:
-        grad_accum_steps = cfg.training.step_interval
+    grad_accum_default = max(1, cfg.training.grad_accum_steps)
+    if cfg.training.step_interval and cfg.training.step_interval > 1 and grad_accum_default == 1:
+        grad_accum_default = cfg.training.step_interval
 
-    # token-based schedule translation
+    grad_accum_schedule = list(cfg.training.grad_accum_schedule or ())
+    grad_accum_schedule.sort(key=lambda pair: pair[0])
+
+    def resolve_grad_accum(step_idx: int) -> int:
+        value = grad_accum_default
+        for boundary, target in grad_accum_schedule:
+            if step_idx >= boundary:
+                value = max(1, int(target))
+            else:
+                break
+        return value
+
     batch_tokens = int(cfg.training.batch_size) * int(cfg.model.context_length)
-    tokens_per_step = max(1, batch_tokens * grad_accum_steps)
+    reference_grad_accum = int(cfg.training.grad_accum_reference or grad_accum_default)
+    reference_tokens_per_step = max(1, batch_tokens * reference_grad_accum)
+    planned_total_tokens = max(1, cfg.training.total_steps * reference_tokens_per_step)
+
+    def tokens_from_steps(steps: int | None) -> float:
+        if steps is None:
+            return 0.0
+        return float(steps) * reference_tokens_per_step
+
+    def resolve_tokens(step_value: int | None, token_value: int | None, *, default: float = 0.0) -> float:
+        if token_value is not None:
+            return float(token_value)
+        if step_value is not None:
+            return tokens_from_steps(step_value)
+        return float(default)
+
+    softcap_warmup_tokens = resolve_tokens(cfg.training.softcap_warmup_steps, cfg.training.softcap_warmup_tokens)
+    zloss_warmup_tokens = resolve_tokens(cfg.training.zloss_warmup_steps, cfg.training.zloss_warmup_tokens)
+
+    sched = cfg.lr_schedule
+    lr_warmup_tokens = resolve_tokens(sched.warmup_steps, sched.warmup_tokens)
+    cosine_default_tokens = planned_total_tokens
+    if sched.cosine_steps is not None:
+        cosine_default_tokens = tokens_from_steps(sched.cosine_steps)
+    lr_cosine_tokens = float(sched.cosine_tokens) if sched.cosine_tokens is not None else float(cosine_default_tokens)
+    lr_decay_tokens = float(sched.decay_tokens) if sched.decay_tokens is not None else float(planned_total_tokens)
+
+    opt_cfg = cfg.optimizer
+    muon_lr_warmup_tokens = resolve_tokens(opt_cfg.muon_lr_warmup_steps, opt_cfg.muon_lr_warmup_tokens)
+    muon_lr_decay_start_tokens = resolve_tokens(opt_cfg.muon_lr_decay_start, opt_cfg.muon_lr_decay_start_tokens)
+    muon_lr_decay_end_tokens = resolve_tokens(opt_cfg.muon_lr_decay_end, opt_cfg.muon_lr_decay_end_tokens, default=planned_total_tokens)
+
+    muon_momentum_warm_tokens = resolve_tokens(opt_cfg.muon_warmup_steps, opt_cfg.muon_momentum_warmup_tokens)
+    muon_momentum_cool_tokens = resolve_tokens(opt_cfg.muon_momentum_cooldown_steps, opt_cfg.muon_momentum_cooldown_tokens)
 
     seen_tokens = 0
     start_step = 0
@@ -268,86 +312,94 @@ def train(cfg: ExperimentConfig) -> None:
 
     for step in range(start_step, cfg.training.total_steps):
         current_step = step + 1
+        current_grad_accum = resolve_grad_accum(step)
+        tokens_this_step = batch_tokens * current_grad_accum
+        tokens_for_schedule = seen_tokens + tokens_this_step
+        virtual_step = tokens_for_schedule / reference_tokens_per_step
 
-        # LR scheduling for Muon (matrix/vector) or global optimizer
-        if isinstance(optimizer, MuonAdamW := type(getattr(torch.optim, "Optimizer", object))):
-            pass  # silence type checker; we only mutate param_groups below
-
+        # Learning-rate scheduling (global or Muon vector group)
         lr_sched = None
         sched = cfg.lr_schedule
         if sched.enabled:
-            warmup_steps = sched.warmup_steps
-            if sched.warmup_tokens is not None:
-                warmup_steps = max(1, math.ceil(sched.warmup_tokens / tokens_per_step))
+            warmup_virtual = lr_warmup_tokens / reference_tokens_per_step
+            warmup_virtual = max(0.0, warmup_virtual)
             if sched.schedule_type in {"linear", "linear_to_zero"}:
-                total_schedule_steps = sched.decay_tokens
-                if total_schedule_steps is not None:
-                    total_schedule_steps = max(warmup_steps + 1, math.ceil(total_schedule_steps / tokens_per_step))
-                else:
-                    total_schedule_steps = cfg.training.total_steps
-                lr_sched = linear_warmup_decay(current_step, sched.alpha_max or base_lr, warmup_steps, total_schedule_steps)
+                total_schedule_virtual = lr_decay_tokens / reference_tokens_per_step
+                total_schedule_virtual = max(warmup_virtual + 1e-6, total_schedule_virtual)
+                lr_sched = linear_warmup_decay(
+                    virtual_step,
+                    sched.alpha_max or base_lr,
+                    warmup_virtual,
+                    total_schedule_virtual,
+                )
             else:
                 alpha_max = sched.alpha_max if sched.alpha_max is not None else base_lr
                 alpha_min = sched.alpha_min if sched.alpha_min is not None else alpha_max
-                cosine_steps = (sched.cosine_steps if sched.cosine_steps is not None else cfg.training.total_steps)
-                if sched.cosine_tokens is not None:
-                    cosine_steps = max(1, math.ceil(sched.cosine_tokens / tokens_per_step))
-                if cosine_steps <= warmup_steps:
-                    raise ValueError("lr_schedule.cosine_steps must be > warmup_steps")
-                lr_sched = cosine_with_warmup(current_step, alpha_max, alpha_min, warmup_steps, cosine_steps)
+                cosine_virtual = lr_cosine_tokens / reference_tokens_per_step
+                cosine_virtual = max(warmup_virtual + 1e-6, cosine_virtual)
+                lr_sched = cosine_with_warmup(
+                    virtual_step,
+                    alpha_max,
+                    alpha_min,
+                    warmup_virtual,
+                    cosine_virtual,
+                )
 
-        # Muon trapezoid for matrices + vector schedule
+        # Muon-specific LR scheduling
         if any(g.get("group_type") == "matrix" for g in optimizer.param_groups):
             opt_cfg = cfg.optimizer
             matrix_base_lr = getattr(optimizer, "_matrix_base_lr", opt_cfg.matrix_base_lr or base_lr)
             vector_base_lr = getattr(optimizer, "_vector_base_lr", opt_cfg.vector_base_lr or base_lr)
-            # decay endpoints can be token-based
-            decay_start = opt_cfg.muon_lr_decay_start
-            decay_end = opt_cfg.muon_lr_decay_end if opt_cfg.muon_lr_decay_end is not None else cfg.training.total_steps
-            if opt_cfg.muon_lr_decay_start_tokens is not None:
-                decay_start = max(1, math.ceil(opt_cfg.muon_lr_decay_start_tokens / tokens_per_step))
-            if opt_cfg.muon_lr_decay_end_tokens is not None:
-                decay_end = max((decay_start or 1) + 1, math.ceil(opt_cfg.muon_lr_decay_end_tokens / tokens_per_step))
-            final_matrix_lr = opt_cfg.muon_lr_final if opt_cfg.muon_lr_final is not None else matrix_base_lr
-            warmup_steps_mu = opt_cfg.muon_lr_warmup_steps or 0
+
+            decay_start_tokens = muon_lr_decay_start_tokens
+            decay_end_tokens = muon_lr_decay_end_tokens
+            if decay_end_tokens <= decay_start_tokens:
+                decay_end_tokens = decay_start_tokens + reference_tokens_per_step
+
+            warmup_tokens_mu = muon_lr_warmup_tokens
             warmup_start_lr = opt_cfg.muon_lr_warmup_start or matrix_base_lr
-            # construct trapezoid specific to matrices: warmup -> hold until decay_start -> cooldown to final
-            hold_steps = max(0, (decay_start or 0) - warmup_steps_mu)
-            cooldown = max(0, (decay_end or cfg.training.total_steps) - (decay_start or 0))
-            matrix_lr_step = trapezoid_schedule(
-                current_step,
-                warmup_steps=warmup_steps_mu,
-                start=warmup_start_lr,
-                peak=matrix_base_lr,
-                hold_steps=hold_steps,
-                cooldown_steps=cooldown,
-            )
+            hold_tokens = max(0.0, decay_start_tokens - warmup_tokens_mu)
+            cooldown_tokens = max(0.0, decay_end_tokens - decay_start_tokens)
+            matrix_lr_step = matrix_base_lr
+            if warmup_tokens_mu > 0.0 or cooldown_tokens > 0.0 or opt_cfg.muon_lr_final is not None:
+                matrix_lr_step = trapezoid_schedule(
+                    virtual_step,
+                    warmup_steps=warmup_tokens_mu / reference_tokens_per_step,
+                    start=warmup_start_lr,
+                    peak=matrix_base_lr,
+                    hold_steps=hold_tokens / reference_tokens_per_step,
+                    cooldown_steps=cooldown_tokens / reference_tokens_per_step,
+                )
+
             for group in optimizer.param_groups:
                 gtype = group.get("group_type")
                 if gtype == "vector":
                     group["lr"] = lr_sched if lr_sched is not None else group.get("base_lr", vector_base_lr)
                 elif gtype == "matrix":
                     group["lr"] = matrix_lr_step
-
         else:
             if lr_sched is not None:
                 for group in optimizer.param_groups:
                     group["lr"] = lr_sched
 
-        # Momentum schedule for Muon
+        # Momentum schedule for Muon matrices
         if isinstance(optimizer, torch.optim.Optimizer):
             mom_min = cfg.optimizer.muon_momentum_min or cfg.optimizer.muon_momentum
             mom_max = cfg.optimizer.muon_momentum_max or cfg.optimizer.muon_momentum
-            warm = max(0, int(cfg.optimizer.muon_warmup_steps))
-            cool = max(0, int(cfg.optimizer.muon_momentum_cooldown_steps))
-            def muon_momentum_at(t: int) -> float:
-                if warm > 0 and t <= warm:
-                    return mom_min + (mom_max - mom_min) * (t / warm)
-                if cool > 0 and t > (cfg.training.total_steps - cool):
-                    k = (t - (cfg.training.total_steps - cool)) / cool
-                    return mom_max + (mom_min - mom_max) * min(1.0, max(0.0, k))
+            warm_tokens = muon_momentum_warm_tokens
+            cool_tokens = muon_momentum_cool_tokens
+
+            def muon_momentum_at(tokens_progress: float) -> float:
+                if warm_tokens > 0.0 and tokens_progress <= warm_tokens:
+                    return mom_min + (mom_max - mom_min) * (tokens_progress / warm_tokens)
+                cooldown_start = planned_total_tokens - cool_tokens
+                if cool_tokens > 0.0 and tokens_progress >= cooldown_start:
+                    k = (tokens_progress - cooldown_start) / max(1.0, cool_tokens)
+                    k = min(max(k, 0.0), 1.0)
+                    return mom_max + (mom_min - mom_max) * k
                 return mom_max
-            current_muon_momentum = muon_momentum_at(current_step)
+
+            current_muon_momentum = muon_momentum_at(tokens_for_schedule)
             for group in optimizer.param_groups:
                 if group.get("group_type") == "matrix":
                     group["momentum"] = current_muon_momentum
@@ -359,8 +411,17 @@ def train(cfg: ExperimentConfig) -> None:
         else:
             optimizer.zero_grad(set_to_none=True)  # type: ignore
 
+        softcap_frac = 1.0
+        if cfg.training.logit_softcap is not None:
+            denom = max(1.0, softcap_warmup_tokens)
+            softcap_frac = min(1.0, tokens_for_schedule / denom)
+        zloss_frac = 1.0
+        if cfg.training.z_loss_weight > 0.0:
+            denom = max(1.0, zloss_warmup_tokens)
+            zloss_frac = min(1.0, tokens_for_schedule / denom)
+
         micro_losses: list[float] = []
-        for _ in range(grad_accum_steps):
+        for _ in range(current_grad_accum):
             if train_prefetcher is not None:
                 X, Y = train_prefetcher.next()
                 if X is None or Y is None:
@@ -380,18 +441,14 @@ def train(cfg: ExperimentConfig) -> None:
             with autocast_scope():
                 logits = model(X)
                 if cfg.training.logit_softcap is not None and model.training:
-                    sc_warm = max(1, int(cfg.training.softcap_warmup_steps))
-                    frac = min(1.0, current_step / sc_warm)
-                    t_eff = float(cfg.training.logit_softcap) / max(1e-3, frac)
+                    t_eff = float(cfg.training.logit_softcap) / max(1e-3, softcap_frac)
                     logits = _apply_softcap_train(logits, t_eff)
 
                 micro_loss = cross_entropy(logits.reshape(-1, logits.size(-1)), Y.reshape(-1))
                 if model.training and cfg.training.z_loss_weight > 0.0:
-                    z_warm = max(1, int(cfg.training.zloss_warmup_steps))
-                    z_frac = min(1.0, current_step / z_warm)
                     z = torch.logsumexp(logits, dim=-1).pow(2).mean()
-                    micro_loss = micro_loss + (cfg.training.z_loss_weight * z_frac) * z
-                loss = micro_loss / grad_accum_steps
+                    micro_loss = micro_loss + (cfg.training.z_loss_weight * zloss_frac) * z
+                loss = micro_loss / current_grad_accum
 
             micro_losses.append(float(micro_loss.detach().cpu()))
             seen_tokens += batch_tokens
@@ -440,6 +497,7 @@ def train(cfg: ExperimentConfig) -> None:
                 "train/loss": mean_micro_loss,
                 "optimizer/global_grad_norm": grad_norm,
                 "tokens/seen": float(seen_tokens),
+                "train/grad_accum": float(current_grad_accum),
             }
 
             # Learning rates

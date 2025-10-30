@@ -66,6 +66,9 @@ class OptimizerConfig:
     muon_lr_final: float | None = None
     muon_lr_warmup_steps: int | None = None
     muon_lr_warmup_start: float | None = None
+    muon_lr_warmup_tokens: int | None = None
+    muon_momentum_warmup_tokens: int | None = None
+    muon_momentum_cooldown_tokens: int | None = None
 
 
 @dataclass(frozen=True)
@@ -96,6 +99,10 @@ class TrainingConfig:
     ema_decay: float | None = None
     ema_update_interval: int = 1
     use_ema_for_eval: bool = False
+    grad_accum_reference: int | None = None
+    grad_accum_schedule: tuple[tuple[int, int], ...] | None = None
+    softcap_warmup_tokens: int | None = None
+    zloss_warmup_tokens: int | None = None
 
 
 @dataclass(frozen=True)
@@ -189,6 +196,42 @@ def _coerce_config_types(cfg: ExperimentConfig) -> ExperimentConfig:
     opt = cfg.optimizer
     if not isinstance(opt.betas, tuple):
         cfg = dataclasses.replace(cfg, optimizer=dataclasses.replace(opt, betas=tuple(opt.betas)))
+    opt = cfg.optimizer
+    opt_kwargs: dict[str, Any] = {}
+    for field_name in (
+        "muon_lr_warmup_tokens",
+        "muon_momentum_warmup_tokens",
+        "muon_momentum_cooldown_tokens",
+    ):
+        value = getattr(opt, field_name, None)
+        if value is not None:
+            opt_kwargs[field_name] = int(value)
+    if opt_kwargs:
+        cfg = dataclasses.replace(cfg, optimizer=dataclasses.replace(opt, **opt_kwargs))
+
+    training = cfg.training
+    training_kwargs: dict[str, Any] = {}
+    if training.grad_accum_reference is not None:
+        training_kwargs["grad_accum_reference"] = int(training.grad_accum_reference)
+    if training.softcap_warmup_tokens is not None:
+        training_kwargs["softcap_warmup_tokens"] = int(training.softcap_warmup_tokens)
+    if training.zloss_warmup_tokens is not None:
+        training_kwargs["zloss_warmup_tokens"] = int(training.zloss_warmup_tokens)
+    if training.grad_accum_schedule is not None:
+        normalized: list[tuple[int, int]] = []
+        for item in training.grad_accum_schedule:
+            if isinstance(item, dict):
+                step_val = int(item.get("step") or item.get("iteration") or item.get("iter") or item.get("start_step") or 0)
+                value_val = int(item.get("value") or item.get("accum") or item.get("grad_accum") or item.get("accumulation") or 0)
+                normalized.append((step_val, max(1, value_val)))
+            elif isinstance(item, (list, tuple)) and len(item) >= 2:
+                step_val = int(item[0])
+                value_val = int(item[1])
+                normalized.append((step_val, max(1, value_val)))
+        normalized.sort(key=lambda pair: pair[0])
+        training_kwargs["grad_accum_schedule"] = tuple(normalized)
+    if training_kwargs:
+        cfg = dataclasses.replace(cfg, training=dataclasses.replace(training, **training_kwargs))
     return cfg
 
 
@@ -219,4 +262,3 @@ def serialize_config(obj: Any) -> Any:
     if isinstance(obj, dict):
         return {key: serialize_config(value) for key, value in obj.items()}
     return obj
-
