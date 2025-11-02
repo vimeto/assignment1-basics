@@ -132,28 +132,17 @@ class BoundaryAwareDataLoader:
         """Yield batches that traverse every window exactly once in random order."""
 
         rng = rng or np.random.default_rng()
-        doc_indices = self._valid_docs.copy()
-        rng.shuffle(doc_indices)
+        starts_epoch = self._sample_without_replacement(rng)
+        if starts_epoch.size == 0:
+            return
 
         buffer: list[int] = []
-        for doc_id in doc_indices:
-            count = int(self._doc_windows[doc_id])
-            if count <= 0:
-                continue
-            doc_start = int(self._doc_starts[doc_id])
-            # Shuffle valid start offsets within this document.
-            if count > 1:
-                permuted = rng.permutation(count).astype(np.int64, copy=False)
-            else:
-                permuted = np.zeros((1,), dtype=np.int64)
-            starts = doc_start + permuted
-
-            for start in starts:
-                buffer.append(int(start))
-                if len(buffer) == self.batch_size:
-                    start_array = np.fromiter(buffer, dtype=np.int64, count=self.batch_size)
-                    yield self._materialize_batch(start_array)
-                    buffer.clear()
+        for start in starts_epoch:
+            buffer.append(int(start))
+            if len(buffer) == self.batch_size:
+                start_array = np.fromiter(buffer, dtype=np.int64, count=self.batch_size)
+                yield self._materialize_batch(start_array)
+                buffer.clear()
 
         if buffer and not drop_last:
             start_array = np.fromiter(buffer, dtype=np.int64, count=len(buffer))
@@ -257,6 +246,18 @@ class BoundaryAwareDataLoader:
             raise ValueError("no valid windows to sample from")
 
         choices = rng.integers(0, self._total_windows, size=size, dtype=np.int64)
+        doc_offsets = np.searchsorted(self._cumulative_windows, choices, side="right")
+        doc_ids = self._valid_docs[doc_offsets]
+        cumulative_previous = self._cumulative_windows[doc_offsets] - self._doc_windows[doc_ids]
+        within_doc_offsets = choices - cumulative_previous
+        starts = self._doc_starts[doc_ids] + within_doc_offsets
+        return starts.astype(np.int64, copy=False)
+
+    def _sample_without_replacement(self, rng: np.random.Generator) -> np.ndarray:
+        total = self._total_windows
+        if total <= 0:
+            return np.empty((0,), dtype=np.int64)
+        choices = rng.permutation(total).astype(np.int64, copy=False)
         doc_offsets = np.searchsorted(self._cumulative_windows, choices, side="right")
         doc_ids = self._valid_docs[doc_offsets]
         cumulative_previous = self._cumulative_windows[doc_offsets] - self._doc_windows[doc_ids]
