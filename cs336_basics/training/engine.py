@@ -130,15 +130,19 @@ def evaluate(
         context_length=cfg.model.context_length,
         batch_size=eval_batch_size,
         device=device,
-        num_workers=cfg.training.num_workers,
-        pin_memory=cfg.training.pin_memory,
-        persistent_workers=cfg.training.persistent_workers,
+        rng=rng,
+        end_of_text_token_id=getattr(cfg.data, "end_of_text_token_id", 31999),
+        full_sweep=cfg.training.eval_full_sweep,
+        stride=cfg.training.eval_stride,
+        shuffle_documents=cfg.training.eval_shuffle_documents,
+        drop_last=False,
+        limit_windows=cfg.training.eval_limit_windows,
         num_batches=cfg.training.eval_batches,
     )
     with torch.no_grad():
-        for X_cpu, Y_cpu in loader:
-            X = X_cpu.to(device, non_blocking=True) if device.type == "cuda" else X_cpu.to(device)
-            Y = Y_cpu.to(device, non_blocking=True) if device.type == "cuda" else Y_cpu.to(device)
+        for X_batch, Y_batch in loader:
+            X = X_batch.to(device, non_blocking=True) if X_batch.device != device else X_batch
+            Y = Y_batch.to(device, non_blocking=True) if Y_batch.device != device else Y_batch
             with (torch.amp.autocast("cuda", dtype=amp_dtype) if use_autocast else nullcontext()):
                 logits = model(X)
                 loss = cross_entropy(logits.reshape(-1, logits.size(-1)), Y.reshape(-1))
@@ -197,19 +201,16 @@ def train(cfg: ExperimentConfig) -> None:
     for group in optimizer.param_groups:
         group.setdefault("base_lr", group.get("lr", base_lr))
 
-    train_loader, train_prefetcher = build_train_loader(
+    train_stream = build_train_loader(
         train_tokens,
         context_length=cfg.model.context_length,
         batch_size=cfg.training.batch_size,
         device=device,
-        num_workers=cfg.training.num_workers,
-        pin_memory=cfg.training.pin_memory,
-        persistent_workers=cfg.training.persistent_workers,
-        boundary_token_id=getattr(cfg.data, "bos_token_id", None),
-        start_after_token=True,
-        use_strided_sampler=False,
+        rng=rng,
+        end_of_text_token_id=getattr(cfg.data, "end_of_text_token_id", 31999),
+        drop_last=True,
     )
-    train_iter = iter(train_loader)
+    train_iter = iter(train_stream)
 
     use_autocast = device.type == "cuda" and cfg.training.precision.lower() in {"float16", "bfloat16"}
     amp_dtype = torch.float16 if cfg.training.precision.lower() == "float16" else torch.bfloat16
@@ -351,24 +352,34 @@ def train(cfg: ExperimentConfig) -> None:
         if has_matrix_group:
 
             decay_start_tokens = muon_lr_decay_start_tokens
-            decay_end_tokens = muon_lr_decay_end_tokens
-            if decay_end_tokens <= decay_start_tokens:
-                decay_end_tokens = decay_start_tokens + reference_tokens_per_step
+            decay_end_tokens = max(decay_start_tokens + reference_tokens_per_step, muon_lr_decay_end_tokens)
 
             warmup_tokens_mu = muon_lr_warmup_tokens
-            warmup_start_lr = opt_cfg.muon_lr_warmup_start or matrix_base_lr
             hold_tokens = max(0.0, decay_start_tokens - warmup_tokens_mu)
             cooldown_tokens = max(0.0, decay_end_tokens - decay_start_tokens)
+
+            warmup_steps = warmup_tokens_mu / reference_tokens_per_step if warmup_tokens_mu > 0.0 else 0.0
+            hold_steps = hold_tokens / reference_tokens_per_step if hold_tokens > 0.0 else 0.0
+            cooldown_steps = cooldown_tokens / reference_tokens_per_step if cooldown_tokens > 0.0 else 0.0
+
+            warmup_start_lr = opt_cfg.muon_lr_warmup_start
+            if warmup_start_lr is None:
+                warmup_start_lr = opt_cfg.muon_lr_final if opt_cfg.muon_lr_final is not None else matrix_base_lr
+            final_lr_target = opt_cfg.muon_lr_final if opt_cfg.muon_lr_final is not None else warmup_start_lr
+
+            t = max(0.0, virtual_step)
             matrix_lr_step = matrix_base_lr
-            if warmup_tokens_mu > 0.0 or cooldown_tokens > 0.0 or opt_cfg.muon_lr_final is not None:
-                matrix_lr_step = trapezoid_schedule(
-                    virtual_step,
-                    warmup_steps=warmup_tokens_mu / reference_tokens_per_step,
-                    start=warmup_start_lr,
-                    peak=matrix_base_lr,
-                    hold_steps=hold_tokens / reference_tokens_per_step,
-                    cooldown_steps=cooldown_tokens / reference_tokens_per_step,
-                )
+            if warmup_steps > 0.0 and t <= warmup_steps:
+                frac = min(1.0, t / max(1.0, warmup_steps))
+                matrix_lr_step = warmup_start_lr + (matrix_base_lr - warmup_start_lr) * frac
+            elif t <= warmup_steps + hold_steps or cooldown_steps <= 0.0:
+                matrix_lr_step = matrix_base_lr
+            else:
+                t_cool = t - warmup_steps - hold_steps
+                frac = min(1.0, max(0.0, t_cool) / max(1.0, cooldown_steps))
+                matrix_lr_step = matrix_base_lr + (final_lr_target - matrix_base_lr) * frac
+
+            matrix_lr_step = max(matrix_lr_step, 0.0)
 
             vector_lr_step = matrix_lr_step * vector_ratio
             for group in optimizer.param_groups:
@@ -427,21 +438,16 @@ def train(cfg: ExperimentConfig) -> None:
 
         micro_losses: list[float] = []
         for _ in range(current_grad_accum):
-            if train_prefetcher is not None:
-                X, Y = train_prefetcher.next()
-                if X is None or Y is None:
-                    train_prefetcher.reset()
-                    X, Y = train_prefetcher.next()
-                    if X is None or Y is None:
-                        raise RuntimeError("DevicePrefetcher delivered no data")
-            else:
-                try:
-                    X_cpu, Y_cpu = next(train_iter)
-                except StopIteration:
-                    train_iter = iter(train_loader)
-                    X_cpu, Y_cpu = next(train_iter)
-                X = X_cpu.to(device)
-                Y = Y_cpu.to(device)
+            try:
+                X, Y = next(train_iter)
+            except StopIteration:
+                train_iter = iter(train_stream)
+                X, Y = next(train_iter)
+
+            if X.device != device:
+                X = X.to(device, non_blocking=True)
+            if Y.device != device:
+                Y = Y.to(device, non_blocking=True)
 
             with autocast_scope():
                 logits = model(X)

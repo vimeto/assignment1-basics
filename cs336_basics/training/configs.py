@@ -85,6 +85,10 @@ class TrainingConfig:
     eval_interval: int = 200
     eval_batches: int = 16
     eval_batch_size: int | None = None
+    eval_full_sweep: bool = False
+    eval_stride: int | None = None
+    eval_shuffle_documents: bool = False
+    eval_limit_windows: int | None = None
     use_torch_compile: bool = False
     compile_mode: str = "reduce-overhead"
     use_gradient_checkpointing: bool = False
@@ -113,6 +117,7 @@ class DataConfig:
     val_path: Path | None = None
     dtype: str = "uint16"
     bos_token_id: int | None = None
+    end_of_text_token_id: int = 31999
 
 
 @dataclass(frozen=True)

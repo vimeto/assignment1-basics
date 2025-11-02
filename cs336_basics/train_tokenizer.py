@@ -40,4 +40,4 @@ if __name__ == "__main__":
     mini_path = "tests/fixtures/tinystories_sample_5M.txt"
     owt_path = "../data/owt_train.txt"
 
-    train_tokenizer(owt_path, 32000, ["<|endoftext|>"], "../tokenizers/owt_tokenizer_32k_2")
+    train_tokenizer(owt_path, 32000, ["<|endoftext|>"], "../tokenizers/owt_tokenizer_32k")

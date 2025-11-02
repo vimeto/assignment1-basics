@@ -19,22 +19,29 @@ class CorpusSpec:
     text_path: Path
     tokenizer_dir: Path
     output_path: Path
+    special_tokens: tuple[str, ...] | None = None
 
 
 class TokenizerCache:
     """Load tokenizer vocab/merge files once and reuse them."""
 
     def __init__(self) -> None:
-        self._cache: Dict[Path, Tokenizer] = {}
+        self._cache: Dict[tuple[Path, tuple[str, ...]], Tokenizer] = {}
 
-    def get(self, tokenizer_dir: Path) -> Tokenizer:
-        key = tokenizer_dir.resolve()
-        tokenizer = self._cache.get(key)
+    def get(self, tokenizer_dir: Path, special_tokens: tuple[str, ...] | None = None) -> Tokenizer:
+        dir_path = tokenizer_dir.resolve()
+        specials_key = special_tokens if special_tokens is not None else tuple()
+        cache_key = (dir_path, specials_key)
+        tokenizer = self._cache.get(cache_key)
         if tokenizer is None:
-            vocab_path = key / "vocab.json"
-            merges_path = key / "merges.txt"
-            tokenizer = Tokenizer.from_files(vocab_path, merges_path)
-            self._cache[key] = tokenizer
+            vocab_path = dir_path / "vocab.json"
+            merges_path = dir_path / "merges.txt"
+            tokenizer = Tokenizer.from_files(
+                vocab_path,
+                merges_path,
+                special_tokens=list(special_tokens) if special_tokens is not None else None,
+            )
+            self._cache[cache_key] = tokenizer
         return tokenizer
 
 
@@ -55,6 +62,7 @@ def default_corpora() -> tuple[CorpusSpec, ...]:
 
     tokenizer_owt_name = "owt_tokenizer_32k"
     tokenizer_ts_name = "ts_10k"
+    owt_special_tokens = ("<|endoftext|>",)
     return (
         CorpusSpec(
             name="tinystories-train",
@@ -73,18 +81,20 @@ def default_corpora() -> tuple[CorpusSpec, ...]:
             text_path=data_dir / "owt_train.txt",
             tokenizer_dir=tokenizer_dir / tokenizer_owt_name,
             output_path=data_dir / "owt_train.npy",
+            special_tokens=owt_special_tokens,
         ),
         CorpusSpec(
             name="owt-valid",
             text_path=data_dir / "owt_valid.txt",
             tokenizer_dir=tokenizer_dir / tokenizer_owt_name,
             output_path=data_dir / "owt_valid.npy",
+            special_tokens=owt_special_tokens,
         ),
     )
 
 
 def tokenize_corpus(spec: CorpusSpec, cache: TokenizerCache, dtype: np.dtype) -> None:
-    tokenizer = cache.get(spec.tokenizer_dir)
+    tokenizer = cache.get(spec.tokenizer_dir, spec.special_tokens)
 
     if spec.text_path.suffix == ".gz":
         opener = gzip.open
