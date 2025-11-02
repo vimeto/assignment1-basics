@@ -3,85 +3,114 @@ from __future__ import annotations
 import numpy as np
 import torch
 
-from cs336_basics.modules.manual_dataloader import (
-    BoundaryAwareDataLoader,
-    DEFAULT_EOT_TOKEN_ID,
-    EvalIterationConfig,
-)
+from cs336_basics.modules.manual_dataloader import dataloader, batch_from_start_indices
 
 
-class TrainBatchStream:
-    """Endless stream of training batches sampled without replacement per epoch."""
+class RandomBatchStream:
+    """Infinite stream of randomly sampled language-modeling batches."""
 
     def __init__(
         self,
-        loader: BoundaryAwareDataLoader,
+        tokens: np.ndarray,
         *,
+        batch_size: int,
+        context_length: int,
+        device: torch.device,
         rng: np.random.Generator | None = None,
-        drop_last: bool = True,
     ) -> None:
-        self.loader = loader
+        self.tokens = np.asarray(tokens)
+        self.batch_size = int(batch_size)
+        self.context_length = int(context_length)
+        self.device = str(device)
         self.rng = rng or np.random.default_rng()
-        self.drop_last = drop_last
 
     def __iter__(self):
         rng = self.rng
-        loader = self.loader
-        drop_last = self.drop_last
+        tokens = self.tokens
+        batch_size = self.batch_size
+        context_length = self.context_length
+        device = self.device
 
         def generator():
             while True:
-                yield from loader.iter_random_without_replacement(rng=rng, drop_last=drop_last)
+                yield dataloader(tokens, batch_size, context_length, device, rng=rng)
 
         return generator()
 
-    @property
-    def total_windows(self) -> int:
-        return self.loader.total_windows
 
-    @property
-    def full_batches_per_epoch(self) -> int:
-        return self.loader.full_batches_per_epoch
-
-    @property
-    def leftovers_per_epoch(self) -> int:
-        return self.loader.leftovers_per_epoch
-
-
-class EvalBatchStream:
-    """Iterator over evaluation batches supporting either full sweeps or random draws."""
+class EvalBatchIterator:
+    """Generate evaluation batches either randomly or via a sequential sweep."""
 
     def __init__(
         self,
-        loader: BoundaryAwareDataLoader,
+        tokens: np.ndarray,
         *,
-        mode: str,
+        batch_size: int,
+        context_length: int,
+        device: torch.device,
         rng: np.random.Generator | None = None,
         num_batches: int | None = None,
-        config: EvalIterationConfig | None = None,
+        full_sweep: bool = False,
+        stride: int | None = None,
+        drop_last: bool = False,
+        limit_windows: int | None = None,
     ) -> None:
-        if mode not in {"full", "random"}:
-            raise ValueError(f"Unsupported eval mode: {mode!r}")
-        self.loader = loader
-        self.mode = mode
+        self.tokens = np.asarray(tokens)
+        self.batch_size = int(batch_size)
+        self.context_length = int(context_length)
+        self.device = str(device)
         self.rng = rng or np.random.default_rng()
         self.num_batches = None if num_batches is None else int(max(1, num_batches))
-        self.config = config
+        self.full_sweep = bool(full_sweep)
+        self.stride = stride
+        self.drop_last = bool(drop_last)
+        self.limit_windows = None if limit_windows is None else int(max(1, limit_windows))
 
     def __iter__(self):
-        loader = self.loader
+        if self.full_sweep:
+            return self._iter_sweep()
+        return self._iter_random()
+
+    def _iter_random(self):
+        tokens = self.tokens
+        batch_size = self.batch_size
+        context_length = self.context_length
+        device = self.device
         rng = self.rng
-        mode = self.mode
-        num_batches = self.num_batches
-        config = self.config
+        num_batches = self.num_batches or 1
 
         def generator():
-            if mode == "full":
-                yield from loader.iter_eval(config=config, rng=rng)
-            else:
-                assert num_batches is not None
-                for _ in range(num_batches):
-                    yield loader.random_batch(rng=rng)
+            for _ in range(num_batches):
+                yield dataloader(tokens, batch_size, context_length, device, rng=rng)
+
+        return generator()
+
+    def _iter_sweep(self):
+        tokens = self.tokens
+        batch_size = self.batch_size
+        context_length = self.context_length
+        device = self.device
+        stride = self.stride if self.stride is not None else context_length
+        total_windows = tokens.size - context_length
+        if total_windows <= 0:
+            raise ValueError("dataset too small for the requested context length")
+
+        starts = np.arange(0, total_windows, stride, dtype=np.int64)
+        if starts[-1] != total_windows - 1:
+            starts = np.append(starts, total_windows - 1)
+        if self.limit_windows is not None:
+            starts = starts[: self.limit_windows]
+
+        def generator():
+            ptr = 0
+            n = starts.size
+            while ptr < n:
+                partial = starts[ptr : ptr + batch_size]
+                if partial.size < batch_size and self.drop_last:
+                    break
+                x, y = batch_from_start_indices(tokens, partial, context_length=context_length, device=device)
+                yield x, y
+                ptr += batch_size
 
         return generator()
 
@@ -93,17 +122,14 @@ def build_train_loader(
     batch_size: int,
     device: torch.device,
     rng: np.random.Generator | None = None,
-    end_of_text_token_id: int = DEFAULT_EOT_TOKEN_ID,
-    drop_last: bool = True,
-) -> TrainBatchStream:
-    loader = BoundaryAwareDataLoader(
+) -> RandomBatchStream:
+    return RandomBatchStream(
         tokens,
-        context_length=context_length,
         batch_size=batch_size,
+        context_length=context_length,
         device=device,
-        end_of_text_token_id=end_of_text_token_id,
+        rng=rng,
     )
-    return TrainBatchStream(loader, rng=rng, drop_last=drop_last)
 
 
 def build_eval_loader(
@@ -113,35 +139,21 @@ def build_eval_loader(
     batch_size: int,
     device: torch.device,
     rng: np.random.Generator | None = None,
-    end_of_text_token_id: int = DEFAULT_EOT_TOKEN_ID,
+    num_batches: int | None = None,
     full_sweep: bool = False,
     stride: int | None = None,
-    shuffle_documents: bool = False,
     drop_last: bool = False,
     limit_windows: int | None = None,
-    num_batches: int | None = None,
-) -> EvalBatchStream:
-    loader = BoundaryAwareDataLoader(
+) -> EvalBatchIterator:
+    return EvalBatchIterator(
         tokens,
-        context_length=context_length,
         batch_size=batch_size,
+        context_length=context_length,
         device=device,
-        end_of_text_token_id=end_of_text_token_id,
+        rng=rng,
+        num_batches=num_batches,
+        full_sweep=full_sweep,
+        stride=stride,
+        drop_last=drop_last,
+        limit_windows=limit_windows,
     )
-
-    if full_sweep:
-        config = EvalIterationConfig(
-            stride=stride,
-            shuffle_documents=shuffle_documents,
-            drop_last=drop_last,
-            limit_windows=limit_windows,
-        )
-        return EvalBatchStream(loader, mode="full", rng=rng, config=config)
-
-    # Random evaluation batches
-    effective_batches = num_batches
-    if limit_windows is not None:
-        effective_batches = max(1, int(limit_windows // max(1, batch_size)))
-    elif num_batches is None:
-        effective_batches = 1
-    return EvalBatchStream(loader, mode="random", rng=rng, num_batches=effective_batches)

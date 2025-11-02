@@ -131,10 +131,8 @@ def evaluate(
         batch_size=eval_batch_size,
         device=device,
         rng=rng,
-        end_of_text_token_id=getattr(cfg.data, "end_of_text_token_id", 31999),
         full_sweep=cfg.training.eval_full_sweep,
         stride=cfg.training.eval_stride,
-        shuffle_documents=cfg.training.eval_shuffle_documents,
         drop_last=False,
         limit_windows=cfg.training.eval_limit_windows,
         num_batches=cfg.training.eval_batches,
@@ -207,8 +205,6 @@ def train(cfg: ExperimentConfig) -> None:
         batch_size=cfg.training.batch_size,
         device=device,
         rng=rng,
-        end_of_text_token_id=getattr(cfg.data, "end_of_text_token_id", 31999),
-        drop_last=True,
     )
     train_iter = iter(train_stream)
 
