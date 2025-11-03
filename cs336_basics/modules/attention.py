@@ -94,12 +94,11 @@ class MultiHeadAttention(nn.Module):
             v = sa_lambda[0] * v
 
         if self.qk_logit_scale is not None:
-            # We provide our own scale (initialized to 1/sqrt(d_k)), so keep torch's scale at 1.0.
-            q = q * self.qk_logit_scale.view(1, self.num_heads, 1, 1)
-            y = F.scaled_dot_product_attention(q, k, v, is_causal=True, dropout_p=0.0, scale=1.0)
-        else:
-            # Fall back to PyTorch's default 1/sqrt(d_k) scaling.
-            y = F.scaled_dot_product_attention(q, k, v, is_causal=True, dropout_p=0.0)
+            default_scale = 1.0 / math.sqrt(self.d_k)
+            scale = (self.qk_logit_scale / default_scale).view(1, self.num_heads, 1, 1).to(q.dtype)
+            q = q * scale
+
+        y = F.scaled_dot_product_attention(q, k, v, is_causal=True, dropout_p=0.0)
 
         y = rearrange(y, "b h s d -> b s (h d)")
         y = y.matmul(self.W_o.t())

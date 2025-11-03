@@ -70,6 +70,8 @@ class OptimizerConfig:
     muon_lr_warmup_tokens: int | None = None
     muon_momentum_warmup_tokens: int | None = None
     muon_momentum_cooldown_tokens: int | None = None
+    matrix_state_dtype: str | None = None
+    vector_state_dtype: str | None = None
 
 
 @dataclass(frozen=True)

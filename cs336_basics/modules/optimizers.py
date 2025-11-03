@@ -339,10 +339,14 @@ class MuonAdamW(torch.optim.Optimizer):
         vector_base_lr: float | None = None,
         normalizer_beta: float = 0.95,
         normalizer_eps: float = 1e-10,
+        matrix_state_dtype: torch.dtype | None = None,
+        vector_state_dtype: torch.dtype | None = None,
     ) -> None:
 
         self.matrix_params: list[torch.nn.Parameter] = []
         self.vector_params: list[torch.nn.Parameter] = []
+        self._matrix_state_dtype = matrix_state_dtype or torch.float32
+        self._vector_state_dtype = vector_state_dtype or torch.float32
 
         params = list(params)
         for p in params:
@@ -432,15 +436,17 @@ class MuonAdamW(torch.optim.Optimizer):
                 grad_matrix = grad32.reshape(rows, cols)
 
                 buf = state.get("momentum_buffer")
-                if buf is None or buf.shape != grad.shape:
-                    buf = torch.zeros_like(grad, dtype=torch.float32)
-                state["momentum_buffer"] = buf
-                buf_matrix = buf.reshape(rows, cols)
+                buf_dtype = self._matrix_state_dtype
+                if buf is None or buf.shape != grad.shape or buf.dtype != buf_dtype:
+                    buf = torch.zeros_like(grad, dtype=buf_dtype)
+                    state["momentum_buffer"] = buf
+                buf32 = buf.to(torch.float32)
+                buf_matrix = buf32.reshape(rows, cols)
                 buf_matrix.mul_(momentum).add_(grad_matrix, alpha=1 - momentum)
 
                 update_matrix = grad_matrix.lerp(buf_matrix, momentum)
                 stacked_updates.append(update_matrix)
-                infos.append((p, rows, cols, param_decay, grad.shape, state))
+                infos.append((p, rows, cols, param_decay, grad.shape, state, buf32))
 
             if not stacked_updates:
                 continue
@@ -465,7 +471,7 @@ class MuonAdamW(torch.optim.Optimizer):
             for mat, info in zip(orth_updates, infos):
                 if info is None:
                     continue
-                p, rows, cols, param_decay, original_shape, state = info
+                p, rows, cols, param_decay, original_shape, state, buf32 = info
 
                 orig_norm = mat.norm().to(torch.float32)
                 mat32 = mat.to(torch.float32)
@@ -476,13 +482,17 @@ class MuonAdamW(torch.optim.Optimizer):
                     reduce_dim = 0
                     moment_shape = (1, cols)
                 moment = mat32.pow(2).mean(dim=reduce_dim, keepdim=True)
+                second_dtype = self._matrix_state_dtype
                 second = state.get("second_moment")
-                if second is None or second.shape != moment_shape:
-                    second = torch.zeros(moment_shape, dtype=torch.float32, device=mat32.device)
-                second.mul_(normalizer_beta).add_(moment, alpha=1 - normalizer_beta)
+                if second is None or second.shape != moment_shape or second.dtype != second_dtype:
+                    second = torch.zeros(moment_shape, dtype=second_dtype, device=mat32.device)
+                    state["second_moment"] = second
+                second32 = second.to(torch.float32)
+                second32.mul_(normalizer_beta).add_(moment, alpha=1 - normalizer_beta)
+                second.copy_(second32.to(second_dtype))
                 state["second_moment"] = second
 
-                mat32.mul_((second + normalizer_eps) ** -0.5)
+                mat32.mul_((second32 + normalizer_eps) ** -0.5)
                 new_norm = mat32.norm()
                 if orig_norm > 0 and new_norm > 0:
                     mat32.mul_(orig_norm / (new_norm + normalizer_eps))
@@ -497,6 +507,9 @@ class MuonAdamW(torch.optim.Optimizer):
 
                 if param_decay != 0:
                     p.data.add_(p.data, alpha=-eff_lr * param_decay * wd_mul)
+
+                buf = state["momentum_buffer"]
+                buf.copy_(buf32.to(buf.dtype))
 
         group["effective_lr"] = base_lr
         group["current_momentum"] = momentum
@@ -517,30 +530,38 @@ class MuonAdamW(torch.optim.Optimizer):
             lr_param = lr * lr_mul
 
             state = self.state[p]
+            state_dtype = self._vector_state_dtype
             exp_avg = state.get("exp_avg")
             exp_avg_sq = state.get("exp_avg_sq")
-            if exp_avg is None:
-                exp_avg = torch.zeros_like(p.data, dtype=torch.float32)
-                exp_avg_sq = torch.zeros_like(p.data, dtype=torch.float32)
+            if exp_avg is None or exp_avg.shape != p.data.shape or exp_avg.dtype != state_dtype:
+                exp_avg = torch.zeros_like(p.data, dtype=state_dtype)
+                state["exp_avg"] = exp_avg
+            if exp_avg_sq is None or exp_avg_sq.shape != p.data.shape or exp_avg_sq.dtype != state_dtype:
+                exp_avg_sq = torch.zeros_like(p.data, dtype=state_dtype)
+                state["exp_avg_sq"] = exp_avg_sq
 
             step = state.get("step", 0) + 1
             state["step"] = step
 
             grad32 = grad.to(torch.float32)
-            exp_avg.mul_(beta1).add_(grad32, alpha=1 - beta1)
-            exp_avg_sq.mul_(beta2).addcmul_(grad32, grad32, value=1 - beta2)
+            exp_avg32 = exp_avg.to(torch.float32)
+            exp_avg_sq32 = exp_avg_sq.to(torch.float32)
+            exp_avg32.mul_(beta1).add_(grad32, alpha=1 - beta1)
+            exp_avg_sq32.mul_(beta2).addcmul_(grad32, grad32, value=1 - beta2)
 
-            denom = exp_avg_sq.sqrt().add_(eps)
+            denom = exp_avg_sq32.sqrt().add_(eps)
             bias_correction1 = 1 - beta1 ** step
             bias_correction2 = 1 - beta2 ** step
             step_size = lr_param * math.sqrt(bias_correction2) / bias_correction1
 
-            update = (exp_avg / denom).to(p.data.dtype)
+            update = (exp_avg32 / denom).to(p.data.dtype)
             p.data.add_(update, alpha=-step_size)
 
             if param_decay != 0:
                 p.data.add_(p.data, alpha=-lr_param * param_decay * wd_mul)
 
+            exp_avg.copy_(exp_avg32.to(state_dtype))
+            exp_avg_sq.copy_(exp_avg_sq32.to(state_dtype))
             state["exp_avg"] = exp_avg
             state["exp_avg_sq"] = exp_avg_sq
 

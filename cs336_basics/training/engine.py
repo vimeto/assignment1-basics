@@ -186,6 +186,7 @@ def train(cfg: ExperimentConfig) -> None:
     val_tokens = load_memmap(cfg.data.val_path, cfg.data.dtype)
 
     rng = np.random.default_rng(cfg.training.seed)
+    val_rng = np.random.default_rng(cfg.training.seed + 1)  # Fixed seed for consistent validation
 
     model = build_model(cfg, device=device, dtype=dtype)
     if cfg.training.use_gradient_checkpointing:
@@ -592,7 +593,7 @@ def train(cfg: ExperimentConfig) -> None:
                         continue
                     ema_backup[name] = p.detach().clone()
                     p.data.copy_(ema_tensor.to(p.device, dtype=p.dtype))
-            val_metrics = evaluate(model, val_tokens, cfg, device, np.random.default_rng())
+            val_metrics = evaluate(model, val_tokens, cfg, device, val_rng)
             print(f"step={step+1} val_loss={val_metrics['loss']:.4f} val_ppl={val_metrics['perplexity']:.2f}")
 
             # Log validation metrics to wandb
@@ -632,7 +633,7 @@ def train(cfg: ExperimentConfig) -> None:
             wandb_run.summary["final/total_steps"] = cfg.training.total_steps
 
             # Run final evaluation
-            final_val_metrics = evaluate(model, val_tokens, cfg, device, np.random.default_rng())
+            final_val_metrics = evaluate(model, val_tokens, cfg, device, val_rng)
             wandb_run.summary["final/val_loss"] = final_val_metrics['loss']
             wandb_run.summary["final/val_perplexity"] = final_val_metrics['perplexity']
             wandb_run.summary["final/val_bits_per_byte"] = final_val_metrics['loss'] / math.log(2)
