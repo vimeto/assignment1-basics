@@ -21,14 +21,14 @@
     "matrix_weight_decay": 0.001,
     "vector_weight_decay": 0.001,
     "matrix_base_lr": 0.06,
-    "vector_lr_ratio": 0.1,
+    "vector_lr_ratio": 0.12,
     "muon_momentum": 0.95,
     "muon_momentum_min": 0.85,
     "muon_momentum_max": 0.95,
     "muon_warmup_steps": 300,
     "muon_momentum_cooldown_steps": 150,
     "muon_ns_steps": 5,
-    "muon_lr_warmup_steps": 150,
+    "muon_lr_warmup_steps": 200,
     "muon_lr_warmup_start": 0.006,
     "muon_lr_decay_start_tokens": 300000000,
     "muon_lr_decay_end_tokens": 700000000,
@@ -38,14 +38,14 @@
   },
   "training": {
     "total_steps": 2000,
-    "batch_size": 58,
+    "batch_size": 50,
     "grad_accum_steps": 8,
     "grad_accum_reference": 16,
     "seed": 7,
     "device": "cuda",
     "precision": "bfloat16",
-    "eval_interval": 200,
-    "eval_batches": 200,
+    "eval_interval": 100,
+    "eval_batches": 100,
     "use_torch_compile": true,
     "compile_mode": "default",
     "logit_softcap": 20.0,
@@ -60,8 +60,9 @@
     "align_to_bos": false,
     "compile_warmup_steps": 5,
     "grad_accum_minutes_schedule": [
-      {"minute": 0, "value": 8},
-      {"minute": 60, "value": 16}
+      {"minute": 0, "value": 4},
+      {"minute": 30, "value": 8},
+      {"minute": 70, "value": 16}
     ]
   },
   "data": {
