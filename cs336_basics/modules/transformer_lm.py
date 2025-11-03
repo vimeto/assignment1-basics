@@ -33,7 +33,7 @@ class TransformerLM(nn.Module):
         x0_gate_init: float = 0.1,
         use_value_embeddings: bool = False,
         num_value_embeddings: int = 3,
-        value_embed_lr_mul: float = 75.0,
+        value_embed_lr_mul: float = 25.0,
         sa_lambda_init: tuple[float, float] = (0.5, 0.5),
         sa_lambda_lr_mul: float = 5.0,
         use_smear: bool = False,

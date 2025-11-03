@@ -30,7 +30,7 @@ class ModelConfig:
     # Value embeddings (nanoGPT-style token value embeddings)
     use_value_embeddings: bool = False
     num_value_embeddings: int = 3
-    value_embed_lr_mul: float = 50.0
+    value_embed_lr_mul: float = 25.0
     # SA lambdas for mixing value and value embeddings
     sa_lambda_init: Tuple[float, float] = (0.5, 0.5)
     sa_lambda_lr_mul: float = 5.0

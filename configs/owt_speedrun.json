@@ -11,6 +11,7 @@
     "use_x0_mixin": false,
     "tie_embeddings": false,
     "use_value_embeddings": true,
+    "value_embed_lr_mul": 25,
     "use_smear": true
   },
   "optimizer": {
@@ -37,7 +38,7 @@
   },
   "training": {
     "total_steps": 2000,
-    "batch_size": 64,
+    "batch_size": 58,
     "grad_accum_steps": 8,
     "grad_accum_reference": 16,
     "seed": 7,
@@ -56,7 +57,7 @@
     "num_workers": 4,
     "pin_memory": true,
     "persistent_workers": true,
-    "align_to_bos": true,
+    "align_to_bos": false,
     "compile_warmup_steps": 5,
     "grad_accum_minutes_schedule": [
       {"minute": 0, "value": 8},

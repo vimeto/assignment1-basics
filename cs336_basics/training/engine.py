@@ -122,6 +122,7 @@ def evaluate(
     original_mode = model.training
     model.eval()
     losses: list[float] = []
+    raw_losses: list[float] = []
     use_autocast = device.type == "cuda" and cfg.training.precision.lower() in {"float16", "bfloat16"}
     amp_dtype = torch.float16 if cfg.training.precision.lower() == "float16" else torch.bfloat16
     eval_batch_size = cfg.training.eval_batch_size or cfg.training.batch_size
@@ -143,16 +144,36 @@ def evaluate(
             Y = Y_batch.to(device, non_blocking=True) if Y_batch.device != device else Y_batch
             with (torch.amp.autocast("cuda", dtype=amp_dtype) if use_autocast else nullcontext()):
                 logits = model(X)
-                loss = cross_entropy(logits.reshape(-1, logits.size(-1)), Y.reshape(-1))
+                raw_loss = cross_entropy(logits.reshape(-1, logits.size(-1)), Y.reshape(-1))
+                eval_logits = logits
+                if cfg.training.logit_softcap is not None:
+                    t_eff = float(cfg.training.logit_softcap)
+                    scale = t_eff * 2.0
+                    eval_logits = scale * torch.sigmoid(eval_logits / (scale / 4.0))
+                loss = cross_entropy(eval_logits.reshape(-1, eval_logits.size(-1)), Y.reshape(-1))
+                if cfg.training.z_loss_weight > 0.0:
+                    z = torch.logsumexp(eval_logits, dim=-1).pow(2).mean()
+                    loss = loss + cfg.training.z_loss_weight * z
             losses.append(float(loss.item()))
+            raw_losses.append(float(raw_loss.item()))
     if original_mode:
         model.train()
     mean_loss = float(np.mean(losses)) if losses else float("nan")
+    mean_raw_loss = float(np.mean(raw_losses)) if raw_losses else float("nan")
     try:
         ppl = float(math.exp(mean_loss))
     except OverflowError:
         ppl = float("inf")
-    return {"loss": mean_loss, "perplexity": ppl}
+    try:
+        ppl_raw = float(math.exp(mean_raw_loss))
+    except OverflowError:
+        ppl_raw = float("inf")
+    return {
+        "loss": mean_loss,
+        "perplexity": ppl,
+        "loss_raw": mean_raw_loss,
+        "perplexity_raw": ppl_raw,
+    }
 
 
 def save_training_checkpoint(model: TransformerLM, optimizer: torch.optim.Optimizer, step: int, checkpoint_dir: os.PathLike[str] | str, max_to_keep: int) -> str:
@@ -437,6 +458,7 @@ def train(cfg: ExperimentConfig) -> None:
             zloss_frac = min(1.0, tokens_for_schedule / denom)
 
         micro_losses: list[float] = []
+        raw_losses: list[float] = []
         for _ in range(current_grad_accum):
             try:
                 X, Y = next(train_iter)
@@ -451,17 +473,24 @@ def train(cfg: ExperimentConfig) -> None:
 
             with autocast_scope():
                 logits = model(X)
+                with torch.no_grad():
+                    raw_loss = cross_entropy(
+                        logits.detach().reshape(-1, logits.size(-1)),
+                        Y.reshape(-1),
+                    )
+                train_logits = logits
                 if cfg.training.logit_softcap is not None and model.training:
                     t_eff = float(cfg.training.logit_softcap) / max(1e-3, softcap_frac)
-                    logits = _apply_softcap_train(logits, t_eff)
+                    train_logits = _apply_softcap_train(train_logits, t_eff)
 
-                micro_loss = cross_entropy(logits.reshape(-1, logits.size(-1)), Y.reshape(-1))
+                micro_loss = cross_entropy(train_logits.reshape(-1, train_logits.size(-1)), Y.reshape(-1))
                 if model.training and cfg.training.z_loss_weight > 0.0:
-                    z = torch.logsumexp(logits, dim=-1).pow(2).mean()
+                    z = torch.logsumexp(train_logits, dim=-1).pow(2).mean()
                     micro_loss = micro_loss + (cfg.training.z_loss_weight * zloss_frac) * z
                 loss = micro_loss / current_grad_accum
 
             micro_losses.append(float(micro_loss.detach().cpu()))
+            raw_losses.append(float(raw_loss.detach().cpu()))
             seen_tokens += batch_tokens
 
             if scaler.is_enabled():
@@ -510,8 +539,10 @@ def train(cfg: ExperimentConfig) -> None:
 
         if (step + 1) % cfg.logging.log_interval == 0 or step == start_step:
             mean_micro_loss = float(np.mean(micro_losses)) if micro_losses else float("nan")
+            mean_raw_loss = float(np.mean(raw_losses)) if raw_losses else float("nan")
             metrics: dict[str, float | None] = {
                 "train/loss": mean_micro_loss,
+                "train/loss_raw": mean_raw_loss,
                 "optimizer/global_grad_norm": grad_norm,
                 "tokens/seen": float(seen_tokens),
                 "train/grad_accum": float(current_grad_accum),
@@ -564,6 +595,10 @@ def train(cfg: ExperimentConfig) -> None:
                 metrics["train/loss_std"] = float(np.std(micro_losses))
                 metrics["train/loss_min"] = float(np.min(micro_losses))
                 metrics["train/loss_max"] = float(np.max(micro_losses))
+            if raw_losses:
+                metrics["train/loss_raw_std"] = float(np.std(raw_losses))
+                metrics["train/loss_raw_min"] = float(np.min(raw_losses))
+                metrics["train/loss_raw_max"] = float(np.max(raw_losses))
 
             if wandb_run is not None:
                 try:
@@ -572,6 +607,8 @@ def train(cfg: ExperimentConfig) -> None:
                     pass
 
             parts = [f"step={step+1}", f"train_loss={mean_micro_loss:.4f}"]
+            if not math.isnan(mean_raw_loss):
+                parts.append(f"train_loss_raw={mean_raw_loss:.4f}")
             if grad_norm is not None:
                 parts.append(f"grad_norm={grad_norm:.4f}")
             # log lr if present
@@ -594,7 +631,13 @@ def train(cfg: ExperimentConfig) -> None:
                     ema_backup[name] = p.detach().clone()
                     p.data.copy_(ema_tensor.to(p.device, dtype=p.dtype))
             val_metrics = evaluate(model, val_tokens, cfg, device, val_rng)
-            print(f"step={step+1} val_loss={val_metrics['loss']:.4f} val_ppl={val_metrics['perplexity']:.2f}")
+            print(
+                f"step={step+1} "
+                f"val_loss_raw={val_metrics['loss_raw']:.4f} "
+                f"val_ppl_raw={val_metrics['perplexity_raw']:.2f} "
+                f"val_loss={val_metrics['loss']:.4f} "
+                f"val_ppl={val_metrics['perplexity']:.2f}"
+            )
 
             # Log validation metrics to wandb
             if wandb_run is not None:
@@ -602,6 +645,8 @@ def train(cfg: ExperimentConfig) -> None:
                     val_log_metrics = {
                         "val/loss": val_metrics['loss'],
                         "val/perplexity": val_metrics['perplexity'],
+                        "val/loss_raw": val_metrics['loss_raw'],
+                        "val/perplexity_raw": val_metrics['perplexity_raw'],
                         "step": step + 1,
                     }
                     wandb_run.log(val_log_metrics)  # type: ignore
