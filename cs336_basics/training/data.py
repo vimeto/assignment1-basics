@@ -17,12 +17,26 @@ class RandomBatchStream:
         context_length: int,
         device: torch.device,
         rng: np.random.Generator | None = None,
+        align_to_bos: bool = False,
+        bos_token_id: int | None = None,
     ) -> None:
         self.tokens = np.asarray(tokens)
         self.batch_size = int(batch_size)
         self.context_length = int(context_length)
         self.device = str(device)
         self.rng = rng or np.random.default_rng()
+        self.align_to_bos = bool(align_to_bos)
+        self._bos_starts: np.ndarray | None = None
+
+        if self.align_to_bos and bos_token_id is not None and self.tokens.size > self.context_length:
+            bos_id = np.array(bos_token_id, dtype=self.tokens.dtype).item()
+            starts = np.flatnonzero(self.tokens == bos_id).astype(np.int64)
+            if starts.size > 0:
+                valid = starts[starts + self.context_length < self.tokens.size]
+                if valid.size > 0:
+                    self._bos_starts = np.ascontiguousarray(valid, dtype=np.int64)
+        if self._bos_starts is None:
+            self.align_to_bos = False
 
     def __iter__(self):
         rng = self.rng
@@ -33,7 +47,11 @@ class RandomBatchStream:
 
         def generator():
             while True:
-                yield dataloader(tokens, batch_size, context_length, device, rng=rng)
+                if self.align_to_bos and self._bos_starts is not None and self._bos_starts.size > 0:
+                    starts = rng.choice(self._bos_starts, size=batch_size, replace=True)
+                    yield batch_from_start_indices(tokens, starts, context_length=context_length, device=device)
+                else:
+                    yield dataloader(tokens, batch_size, context_length, device, rng=rng)
 
         return generator()
 
@@ -122,6 +140,8 @@ def build_train_loader(
     batch_size: int,
     device: torch.device,
     rng: np.random.Generator | None = None,
+    align_to_bos: bool = False,
+    bos_token_id: int | None = None,
 ) -> RandomBatchStream:
     return RandomBatchStream(
         tokens,
@@ -129,6 +149,8 @@ def build_train_loader(
         context_length=context_length,
         device=device,
         rng=rng,
+        align_to_bos=align_to_bos,
+        bos_token_id=bos_token_id,
     )
 
 

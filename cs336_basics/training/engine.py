@@ -199,12 +199,16 @@ def train(cfg: ExperimentConfig) -> None:
     for group in optimizer.param_groups:
         group.setdefault("base_lr", group.get("lr", base_lr))
 
+    bos_token_id = cfg.data.bos_token_id if cfg.data.bos_token_id is not None else cfg.data.end_of_text_token_id
+
     train_stream = build_train_loader(
         train_tokens,
         context_length=cfg.model.context_length,
         batch_size=cfg.training.batch_size,
         device=device,
         rng=rng,
+        align_to_bos=cfg.training.align_to_bos,
+        bos_token_id=bos_token_id,
     )
     train_iter = iter(train_stream)
 
@@ -416,10 +420,9 @@ def train(cfg: ExperimentConfig) -> None:
                 if group.get("group_type") == "matrix":
                     group["momentum"] = current_muon_momentum
 
-        # Clear grads with staggered accumulation policy
-        matrix_only_step = any(g.get("group_type") == "matrix" for g in optimizer.param_groups) and (step % 2 == 0)
+        # Always clear gradients for both matrix and vector parameter groups.
         if hasattr(optimizer, "param_groups"):
-            zero_grads_for(optimizer, matrix=True, vector=not matrix_only_step)
+            zero_grads_for(optimizer, matrix=True, vector=True)
         else:
             optimizer.zero_grad(set_to_none=True)  # type: ignore
 
@@ -472,18 +475,24 @@ def train(cfg: ExperimentConfig) -> None:
         if cfg.training.grad_clip_norm is not None:
             gradient_clipping(model_params, cfg.training.grad_clip_norm)
 
-        step_kwargs = {}
-        if any(g.get("group_type") == "matrix" for g in optimizer.param_groups):
-            step_kwargs = {"matrix_step": True, "vector_step": not matrix_only_step}
+        has_group_types = any(g.get("group_type") in ("matrix", "vector") for g in optimizer.param_groups)
+        step_kwargs = {"matrix_step": True, "vector_step": True} if has_group_types else {}
         if scaler.is_enabled():
-            optimizer.step(**step_kwargs)
+            if step_kwargs:
+                optimizer.step(**step_kwargs)
+            else:
+                optimizer.step()
             scaler.update()
         else:
-            optimizer.step(**step_kwargs)
+            if step_kwargs:
+                optimizer.step(**step_kwargs)
+            else:
+                optimizer.step()
 
-        if any(g.get("group_type") == "matrix" for g in optimizer.param_groups):
-            if (step % 2) == 1:
-                zero_grads_for(optimizer, matrix=True, vector=True)
+        if hasattr(optimizer, "param_groups"):
+            zero_grads_for(optimizer, matrix=True, vector=True)
+        else:
+            optimizer.zero_grad(set_to_none=True)  # type: ignore
 
         if ema_state is not None and current_step % ema_update_every == 0:
             decay = float(ema_decay)

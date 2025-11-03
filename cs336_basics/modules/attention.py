@@ -77,13 +77,13 @@ class MultiHeadAttention(nn.Module):
         k = rearrange(k, "b s (h d) -> b h s d", h=self.num_heads)
         v = rearrange(v, "b s (h d) -> b h s d", h=self.num_heads)
 
-        if self.q_norm is not None:
-            q = self.q_norm(q)
-            k = self.k_norm(k)
-
         if self.use_rope and self.rope is not None and token_positions is not None:
             q = self.rope(q, token_positions)
             k = self.rope(k, token_positions)
+
+        if self.q_norm is not None:
+            q = self.q_norm(q)
+            k = self.k_norm(k)
 
         # Mix value embeddings (nanoGPT-style): v = sa_lambdas[0] * v + sa_lambdas[1] * ve
         if value_embed is not None and sa_lambda is not None:
