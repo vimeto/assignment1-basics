@@ -11,8 +11,9 @@
     "use_x0_mixin": false,
     "tie_embeddings": false,
     "use_value_embeddings": true,
-    "value_embed_lr_mul": 75,
-    "use_smear": true
+    "value_embed_lr_mul": 25,
+    "use_smear": true,
+    "use_swiglu": false
   },
   "optimizer": {
     "name": "muon",
@@ -20,26 +21,26 @@
     "weight_decay": 0.001,
     "matrix_weight_decay": 0.001,
     "vector_weight_decay": 0.001,
-    "matrix_base_lr": 0.06,
-    "vector_lr_ratio": 0.1,
+    "matrix_base_lr": 0.065,
+    "vector_lr_ratio": 0.11,
     "muon_momentum": 0.95,
     "muon_momentum_min": 0.85,
     "muon_momentum_max": 0.95,
-    "muon_warmup_steps": 300,
-    "muon_momentum_cooldown_steps": 150,
+    "muon_warmup_steps": 200,
+    "muon_momentum_cooldown_steps": 200,
     "muon_ns_steps": 5,
-    "muon_lr_warmup_steps": 100,
-    "muon_lr_warmup_start": 0.006,
-    "muon_lr_decay_start_tokens": 300000000,
+    "muon_lr_warmup_steps": 250,
+    "muon_lr_warmup_start": 0.005,
+    "muon_lr_decay_start_tokens": 450000000,
     "muon_lr_decay_end_tokens": 700000000,
-    "muon_lr_final": 0.006,
+    "muon_lr_final": 0.0043,
     "muon_momentum_warmup_tokens": 70000000,
     "matrix_state_dtype": "bfloat16"
   },
   "training": {
-    "total_steps": 2000,
-    "batch_size": 50,
-    "grad_accum_steps": 8,
+    "total_steps": 2100,
+    "batch_size": 56,
+    "grad_accum_steps": 2,
     "grad_accum_reference": 16,
     "seed": 7,
     "device": "cuda",
@@ -57,12 +58,13 @@
     "num_workers": 4,
     "pin_memory": true,
     "persistent_workers": true,
-    "align_to_bos": true,
+    "align_to_bos": false,
     "compile_warmup_steps": 5,
     "grad_accum_minutes_schedule": [
-      {"minute": 0, "value": 4},
-      {"minute": 30, "value": 8},
-      {"minute": 70, "value": 16}
+      {"minute": 0, "value": 2},
+      {"minute": 17, "value": 4},
+      {"minute": 35, "value": 8},
+      {"minute": 75, "value": 16}
     ]
   },
   "data": {
