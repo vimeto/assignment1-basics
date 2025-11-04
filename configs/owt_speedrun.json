@@ -68,8 +68,8 @@
     ]
   },
   "data": {
-    "train_path": "/data0/data1/owt_train.npy",
-    "val_path": "/data0/data1/owt_valid.npy",
+    "train_path": "/data/data1/owt_train.npy",
+    "val_path": "/data/data1/owt_valid.npy",
     "dtype": "uint16"
   },
   "checkpoint": {
