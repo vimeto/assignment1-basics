@@ -26,11 +26,11 @@ class ModelConfig:
     unet_gate_init: float = 0.1
     use_x0_mixin: bool = True
     x0_gate_init: float = 0.1
-    tie_embeddings: bool = True
+    tie_embeddings: bool = False
     # Value embeddings (nanoGPT-style token value embeddings)
     use_value_embeddings: bool = False
     num_value_embeddings: int = 3
-    value_embed_lr_mul: float = 25.0
+    value_embed_lr_mul: float = 50.0
     # SA lambdas for mixing value and value embeddings
     sa_lambda_init: Tuple[float, float] = (0.5, 0.5)
     sa_lambda_lr_mul: float = 5.0
@@ -38,6 +38,10 @@ class ModelConfig:
     use_smear: bool = False
     smear_lambda_init: float = 0.0
     smear_gate_dim: int = 12
+    # Attention gating
+    use_attn_gate: bool = False
+    attn_gate_dim: int = 12
+    attn_gate_lr_mul: float = 5.0
 
 
 @dataclass(frozen=True)

@@ -6,6 +6,7 @@ from einops import rearrange, einsum
 import numpy as np
 from .rope import RoPE
 from .qk_norm import QKNorm
+from .linear import Linear
 
 class MultiHeadAttention(nn.Module):
     def __init__(
@@ -18,6 +19,9 @@ class MultiHeadAttention(nn.Module):
         use_rope: bool = True,
         use_qk_norm: bool = False,
         qk_norm_eps: float = 1e-6,
+        use_attn_gate: bool = False,
+        attn_gate_dim: int = 0,
+        attn_gate_lr_mul: float = 5.0,
     ):
         super().__init__()
         assert d_model % num_heads == 0
@@ -25,10 +29,22 @@ class MultiHeadAttention(nn.Module):
         self.num_heads = num_heads
         self.d_k = d_model // num_heads
         self.device = device
+        if isinstance(device, RoPE):
+            rope = device
+            device = None
+        if isinstance(dtype, RoPE):
+            if rope is not None:
+                raise ValueError("RoPE instance provided for both dtype and rope parameters")
+            rope = dtype
+            dtype = None
+
         self.dtype = dtype # <-- FIX: Added dtype
         self.rope = rope
         self.use_rope = use_rope
         self.use_qk_norm = use_qk_norm
+        self.use_attn_gate = bool(use_attn_gate)
+        self.attn_gate_dim = int(attn_gate_dim) if use_attn_gate else 0
+        self.attn_gate_lr_mul = float(attn_gate_lr_mul)
 
         var = 2.0 / float(d_model + d_model)
         std = float(np.sqrt(var))
@@ -67,6 +83,18 @@ class MultiHeadAttention(nn.Module):
             self.k_norm = None
             self.qk_logit_scale = None
 
+        if self.use_attn_gate and self.attn_gate_dim > 0:
+            if self.attn_gate_dim > d_model:
+                raise ValueError(f"attn_gate_dim {self.attn_gate_dim} must be <= d_model {d_model}")
+            gate_linear = Linear(self.attn_gate_dim, self.num_heads, device=device, dtype=dtype)
+            gate_linear.linear.data.zero_()
+            gate_linear.linear._optimizer_group = "vector"
+            gate_linear.linear._weight_decay = 0.0
+            gate_linear.linear.lr_mul = self.attn_gate_lr_mul
+            self.attn_gate = gate_linear
+        else:
+            self.attn_gate = None
+
     def forward(self, x: torch.Tensor, token_positions: torch.Tensor | None = None, value_embed: torch.Tensor | None = None, sa_lambda: torch.Tensor | None = None) -> torch.Tensor:
         # x: (B, S, d_model)
         B, S, _ = x.shape
@@ -100,6 +128,39 @@ class MultiHeadAttention(nn.Module):
 
         y = F.scaled_dot_product_attention(q, k, v, is_causal=True, dropout_p=0.0)
 
-        y = rearrange(y, "b h s d -> b s (h d)")
+        if self.attn_gate is not None:
+            y = rearrange(y, "b h s d -> b s h d")
+            gate_input = x[..., :self.attn_gate_dim]
+            gate = torch.sigmoid(self.attn_gate(gate_input)).view(B, S, self.num_heads, 1)
+            y = y * gate
+            y = rearrange(y, "b s h d -> b s (h d)")
+        else:
+            y = rearrange(y, "b h s d -> b s (h d)")
+
         y = y.matmul(self.W_o.t())
         return y
+
+
+def attention(
+    K: torch.Tensor,
+    Q: torch.Tensor,
+    V: torch.Tensor,
+    mask: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """Reference scaled dot-product attention used in unit tests."""
+    q = Q
+    k = K
+    v = V
+    dim = q.size(-1)
+    scores = torch.matmul(q, k.transpose(-1, -2)) / math.sqrt(dim)
+    if mask is not None:
+        mask_bool = mask.to(torch.bool)
+        scores = scores.masked_fill(~mask_bool, float("-inf"))
+    weights = torch.softmax(scores, dim=-1)
+    weights = torch.nan_to_num(weights, nan=0.0, posinf=0.0, neginf=0.0)
+    return torch.matmul(weights, v)
+
+
+def softmax(x: torch.Tensor, dim: int) -> torch.Tensor:
+    """Reference softmax used in unit tests."""
+    return torch.softmax(x, dim=dim)

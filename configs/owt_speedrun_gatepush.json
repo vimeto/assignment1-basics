@@ -8,11 +8,15 @@
         "use_qk_norm": true,
         "use_unet_residual": true,
         "unet_gate_init": -1.5,
-        "use_x0_mixin": false,
+        "use_x0_mixin": true,
+        "x0_gate_init": 0.1,
         "tie_embeddings": false,
         "use_value_embeddings": true,
-        "value_embed_lr_mul": 25,
-        "use_smear": true
+        "value_embed_lr_mul": 50,
+        "use_smear": true,
+        "use_attn_gate": true,
+        "attn_gate_dim": 12,
+        "attn_gate_lr_mul": 5
     },
     "optimizer": {
         "name": "muon",
@@ -21,31 +25,31 @@
         "matrix_weight_decay": 0.001,
         "vector_weight_decay": 0.001,
         "matrix_base_lr": 0.07,
-        "vector_lr_ratio": 0.11,
-        "muon_momentum": 0.95,
+        "vector_lr_ratio": 0.1,
+        "muon_momentum": 0.96,
         "muon_momentum_min": 0.85,
-        "muon_momentum_max": 0.95,
-        "muon_warmup_steps": 250,
-        "muon_momentum_cooldown_steps": 150,
+        "muon_momentum_max": 0.96,
+        "muon_warmup_steps": 300,
+        "muon_momentum_cooldown_steps": 200,
         "muon_ns_steps": 5,
-        "muon_lr_warmup_steps": 250,
-        "muon_lr_warmup_start": 0.005,
-        "muon_lr_decay_start_tokens": 280000000,
+        "muon_lr_warmup_steps": 300,
+        "muon_lr_warmup_start": 0.015,
+        "muon_lr_decay_start_tokens": 450000000,
         "muon_lr_decay_end_tokens": 700000000,
-        "muon_lr_final": 0.0045,
+        "muon_lr_final": 0.007,
         "muon_momentum_warmup_tokens": 70000000,
         "matrix_state_dtype": "bfloat16"
     },
     "training": {
-        "total_steps": 2000,
-        "batch_size": 56,
-        "grad_accum_steps": 8,
+        "total_steps": 2100,
+        "batch_size": 50,
+        "grad_accum_steps": 2,
         "grad_accum_reference": 16,
         "seed": 7,
         "device": "cuda",
         "precision": "bfloat16",
-        "eval_interval": 150,
-        "eval_batches": 120,
+        "eval_interval": 210,
+        "eval_batches": 150,
         "use_torch_compile": true,
         "compile_mode": "default",
         "logit_softcap": 20.0,
@@ -62,6 +66,10 @@
         "grad_accum_minutes_schedule": [
             {
                 "minute": 0,
+                "value": 2
+            },
+            {
+                "minute": 10,
                 "value": 4
             },
             {
@@ -75,12 +83,12 @@
         ]
     },
     "data": {
-        "train_path": "/data0/data1/owt_train.npy",
-        "val_path": "/data0/data1/owt_valid.npy",
+        "train_path": "/data/data1/owt_train.npy",
+        "val_path": "/data/data1/owt_valid.npy",
         "dtype": "uint16"
     },
     "checkpoint": {
-        "checkpoint_dir": "./checkpoints/owt_speedrun_lrpush",
+        "checkpoint_dir": "./checkpoints/owt_speedrun_gatepush",
         "save_interval": 1000,
         "max_to_keep": 3
     },
@@ -89,6 +97,6 @@
         "use_wandb": true,
         "project": "cs336-owt",
         "entity": "vilhelm-toivonen-helsinki-university",
-        "run_name": "owt_speedrun_lrpush"
+        "run_name": "owt_speedrun_gatepush"
     }
 }

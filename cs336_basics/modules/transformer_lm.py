@@ -28,17 +28,20 @@ class TransformerLM(nn.Module):
         use_qk_norm: bool = True,
         use_unet_residual: bool = True,
         unet_gate_init: float = 0.1,
-        tie_embeddings: bool = True,
+        tie_embeddings: bool = False,
         use_x0_mixin: bool = True,
         x0_gate_init: float = 0.1,
         use_value_embeddings: bool = False,
         num_value_embeddings: int = 3,
-        value_embed_lr_mul: float = 25.0,
+        value_embed_lr_mul: float = 50.0,
         sa_lambda_init: tuple[float, float] = (0.5, 0.5),
         sa_lambda_lr_mul: float = 5.0,
         use_smear: bool = False,
         smear_lambda_init: float = 0.0,
         smear_gate_dim: int = 12,
+        use_attn_gate: bool = False,
+        attn_gate_dim: int = 12,
+        attn_gate_lr_mul: float = 5.0,
     ):
         super().__init__()
         self.vocab_size = vocab_size
@@ -55,6 +58,9 @@ class TransformerLM(nn.Module):
         self.num_value_embeddings = num_value_embeddings
         self.value_embed_lr_mul = value_embed_lr_mul
         self.use_smear = use_smear
+        self.use_attn_gate = use_attn_gate
+        self.attn_gate_dim = attn_gate_dim
+        self.attn_gate_lr_mul = attn_gate_lr_mul
 
         self.d_k = d_model // num_heads
         self.rope = RoPE(rope_theta, self.d_k, context_length, device=device, dtype=dtype)
@@ -94,10 +100,23 @@ class TransformerLM(nn.Module):
 
         self.layers = nn.ModuleList([
             TransformerBlock(
-                d_model, num_heads, d_ff, device=device, dtype=dtype, rope=self.rope,
-                use_rope=use_rope, use_pre_norm=use_pre_norm, use_post_norm=use_post_norm,
-                use_rmsnorm=use_rmsnorm, use_swiglu=use_swiglu, use_qk_norm=use_qk_norm,
-                layer_idx=i, num_layers=num_layers
+                d_model,
+                num_heads,
+                d_ff,
+                device=device,
+                dtype=dtype,
+                rope=self.rope,
+                use_rope=use_rope,
+                use_pre_norm=use_pre_norm,
+                use_post_norm=use_post_norm,
+                use_rmsnorm=use_rmsnorm,
+                use_swiglu=use_swiglu,
+                use_qk_norm=use_qk_norm,
+                layer_idx=i,
+                num_layers=num_layers,
+                use_attn_gate=use_attn_gate,
+                attn_gate_dim=attn_gate_dim,
+                attn_gate_lr_mul=attn_gate_lr_mul,
             ) for i in range(num_layers)
         ])
 

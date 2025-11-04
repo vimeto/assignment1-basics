@@ -88,6 +88,9 @@ def build_model(cfg: ExperimentConfig, device: torch.device, dtype: torch.dtype)
         use_smear=cfg.model.use_smear,
         smear_lambda_init=cfg.model.smear_lambda_init,
         smear_gate_dim=cfg.model.smear_gate_dim,
+        use_attn_gate=cfg.model.use_attn_gate,
+        attn_gate_dim=cfg.model.attn_gate_dim,
+        attn_gate_lr_mul=cfg.model.attn_gate_lr_mul,
     )
     # Optimizer metadata: vectors vs matrices; emb lr multipliers; tag fused qkvo
     try:

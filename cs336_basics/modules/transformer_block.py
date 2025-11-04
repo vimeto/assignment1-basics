@@ -20,10 +20,13 @@ class TransformerBlock(nn.Module):
         use_pre_norm: bool = True,
         use_post_norm: bool = False,
         use_rmsnorm: bool = True,
-        use_swiglu: bool = False,   # ReLU² path
+        use_swiglu: bool = False,
         use_qk_norm: bool = True,
         layer_idx: int = 0,
         num_layers: int = 1,
+        use_attn_gate: bool = False,
+        attn_gate_dim: int = 0,
+        attn_gate_lr_mul: float = 5.0,
     ):
         super().__init__()
         norm = RMSNorm if use_rmsnorm else IdentityNorm
@@ -33,7 +36,16 @@ class TransformerBlock(nn.Module):
         self.post_ffn_norm = norm(d_model, device=device, dtype=dtype) if use_post_norm else IdentityNorm(d_model)
 
         self.attn = MultiHeadAttention(
-            d_model, num_heads, device, dtype=dtype, rope=rope, use_rope=use_rope, use_qk_norm=use_qk_norm
+            d_model,
+            num_heads,
+            device,
+            dtype=dtype,
+            rope=rope,
+            use_rope=use_rope,
+            use_qk_norm=use_qk_norm,
+            use_attn_gate=use_attn_gate,
+            attn_gate_dim=attn_gate_dim,
+            attn_gate_lr_mul=attn_gate_lr_mul,
         )
         self.attn.W_qkv._is_qkvo = True
         if use_swiglu:
@@ -56,7 +68,17 @@ class TransformerBlock(nn.Module):
         self.resid_attn_scale._weight_decay = 0.0
         self.resid_ffn_scale._weight_decay = 0.0
 
-    def forward(self, x: torch.Tensor, pos: torch.Tensor, value_embed: torch.Tensor | None = None, sa_lambda: torch.Tensor | None = None) -> torch.Tensor:
+    def forward(
+        self,
+        x: torch.Tensor,
+        pos: torch.Tensor | None = None,
+        value_embed: torch.Tensor | None = None,
+        sa_lambda: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        if pos is None:
+            seq_len = x.size(1)
+            base = torch.arange(seq_len, device=x.device)
+            pos = base.unsqueeze(0).expand(x.size(0), -1)
         a_out = self.attn(self.pre_attn_norm(x) * self.lns_scale, pos, value_embed, sa_lambda)
         a_out = self.post_attn_norm(a_out)
         y = x + a_out * self.resid_attn_scale
