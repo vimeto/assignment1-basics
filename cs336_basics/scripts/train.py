@@ -6,10 +6,11 @@ from pathlib import Path
 import torch
 import torch.backends.cuda
 
-torch.set_float32_matmul_precision("medium")
+torch.set_float32_matmul_precision("high")
 if torch.cuda.is_available():
-    torch.backends.cuda.matmul.fp32_precision = "tf32"
-    torch.backends.cudnn.conv.fp32_precision = "tf32"
+    # Allow TF32 on matmul/conv; safe for Ampere+ and speeds up BF16 training.
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
 
 from cs336_basics.training.configs import load_config, apply_cli_overrides
 from cs336_basics.training.engine import train
@@ -31,4 +32,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

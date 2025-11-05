@@ -410,7 +410,7 @@ class MuonAdamW(torch.optim.Optimizer):
         normalizer_beta = group.get("normalizer_beta", 0.95)
         normalizer_eps = group.get("normalizer_eps", 1e-10)
 
-        shape_buckets: dict[tuple[tuple[int, ...], bool], list[torch.nn.Parameter]] = defaultdict(list)
+        shape_buckets: dict[tuple[tuple[int, ...], bool, tuple[int, ...], int | None], list[torch.nn.Parameter]] = defaultdict(list)
         for p in group["params"]:
             if p.grad is None:
                 continue
@@ -418,9 +418,11 @@ class MuonAdamW(torch.optim.Optimizer):
                 # these parameters should generally live in the vector group
                 continue
             is_qkvo = bool(getattr(p, "_is_qkvo", False))
-            shape_buckets[(tuple(p.grad.shape), is_qkvo)].append(p)
+            partition = tuple(int(s) for s in getattr(p, "_muon_partition", ()))
+            partition_dim = int(getattr(p, "_muon_partition_dim", 0)) if partition else None
+            shape_buckets[(tuple(p.grad.shape), is_qkvo, partition, partition_dim)].append(p)
 
-        for (shape, is_qkvo_batch), params in shape_buckets.items():
+        for (shape, is_qkvo_batch, partition, partition_dim), params in shape_buckets.items():
             stacked_updates = []
             infos = []
             for p in params:
@@ -453,7 +455,12 @@ class MuonAdamW(torch.optim.Optimizer):
 
             update_batch = torch.stack(stacked_updates)
 
-            if is_qkvo_batch:
+            if partition:
+                axis = 1 if (partition_dim or 0) == 0 else 2
+                chunks = torch.split(update_batch, partition, dim=axis)
+                processed = [polar_express_sign(chunk) for chunk in chunks]
+                orth_updates = torch.cat(processed, dim=axis)
+            elif is_qkvo_batch:
                 B, r, c = update_batch.shape
                 if c % 4 == 0:
                     reshaped = update_batch.view(B * 4, r, c // 4)

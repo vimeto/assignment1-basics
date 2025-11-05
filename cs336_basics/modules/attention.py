@@ -51,6 +51,9 @@ class MultiHeadAttention(nn.Module):
         w_qkv = torch.empty(3 * d_model, d_model, device=self.device, dtype=self.dtype)
         nn.init.trunc_normal_(w_qkv, mean=0.0, std=std, a=-3*std, b=3*std)
         self.W_qkv = nn.Parameter(w_qkv)
+        # Help Muon treat fused Q/K/V blocks independently (3-way split along rows).
+        self.W_qkv._muon_partition = (int(d_model), int(d_model), int(d_model))
+        self.W_qkv._muon_partition_dim = 0
 
         # Zero-init W_o (stabilizes early training; widely used in speedruns)
         w_o = torch.zeros(d_model, d_model, device=self.device, dtype=self.dtype)

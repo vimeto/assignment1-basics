@@ -12,11 +12,17 @@ import torch
 from cs336_basics.training.configs import ExperimentConfig
 from cs336_basics.training.optim import build_optimizer, zero_grads_for
 from cs336_basics.training.schedules import trapezoid_schedule
-from cs336_basics.training.data import build_train_loader, build_eval_loader
+from cs336_basics.training.data import build_eval_loader
 from cs336_basics.modules.transformer_lm import TransformerLM
 from cs336_basics.modules.cross_entropy import cross_entropy
 from cs336_basics.modules.checkpointing import save_checkpoint as module_save_checkpoint, load_checkpoint as module_load_checkpoint
 from cs336_basics.modules.gradient import gradient_clipping
+from cs336_basics.modules.dataloader import (
+    LMSequenceDataset,
+    RandomizedStridedIndexSampler,
+    DevicePrefetcher,
+    BOSAlignedSampler,
+)
 
 try:
     from torch.amp import GradScaler as TorchGradScaler
@@ -102,7 +108,11 @@ def build_model(cfg: ExperimentConfig, device: torch.device, dtype: torch.dtype)
             in_attn = ("attn" in lname) or ("attention" in lname) or ("self_attn" in lname)
             name_hints = any(k in lname for k in ("qkv", "qkvo", "w_qkv", "wqkv", "q_proj", "k_proj", "v_proj", "o_proj"))
             if looks_fused and (in_attn or name_hints):
-                setattr(p, "_is_qkvo", True)
+                rows, cols = p.shape
+                col_ratio = cols // rows if rows > 0 and cols % rows == 0 else None
+                row_ratio = rows // cols if cols > 0 and rows % cols == 0 else None
+                if col_ratio == 4 or row_ratio == 4:
+                    setattr(p, "_is_qkvo", True)
     except Exception:
         pass
     for _, p in model.named_parameters():
@@ -226,16 +236,36 @@ def train(cfg: ExperimentConfig) -> None:
 
     bos_token_id = cfg.data.bos_token_id if cfg.data.bos_token_id is not None else cfg.data.end_of_text_token_id
 
-    train_stream = build_train_loader(
-        train_tokens,
-        context_length=cfg.model.context_length,
+    train_dataset = LMSequenceDataset(train_tokens, context_length=cfg.model.context_length)
+    if cfg.training.align_to_bos and bos_token_id is not None:
+        train_sampler = BOSAlignedSampler(
+            train_tokens,
+            context_length=cfg.model.context_length,
+            bos_token_id=bos_token_id,
+            rng=rng,
+        )
+    else:
+        train_sampler = RandomizedStridedIndexSampler(len(train_dataset), rng=rng)
+
+    train_loader = torch.utils.data.DataLoader(
+        train_dataset,
         batch_size=cfg.training.batch_size,
-        device=device,
-        rng=rng,
-        align_to_bos=cfg.training.align_to_bos,
-        bos_token_id=bos_token_id,
+        sampler=train_sampler,
+        num_workers=cfg.training.num_workers,
+        pin_memory=cfg.training.pin_memory,
+        persistent_workers=cfg.training.persistent_workers,
+        drop_last=True,
     )
-    train_iter = iter(train_stream)
+    train_prefetcher = DevicePrefetcher(train_loader, device=device)
+
+    def next_train_batch() -> tuple[torch.Tensor, torch.Tensor]:
+        X, Y = train_prefetcher.next()
+        if X is None or Y is None:
+            train_prefetcher.reset()
+            X, Y = train_prefetcher.next()
+            if X is None or Y is None:
+                raise RuntimeError("train dataloader produced no batches")
+        return X, Y
 
     use_autocast = device.type == "cuda" and cfg.training.precision.lower() in {"float16", "bfloat16"}
     amp_dtype = torch.float16 if cfg.training.precision.lower() == "float16" else torch.bfloat16
@@ -463,16 +493,7 @@ def train(cfg: ExperimentConfig) -> None:
         micro_losses: list[float] = []
         raw_losses: list[float] = []
         for _ in range(current_grad_accum):
-            try:
-                X, Y = next(train_iter)
-            except StopIteration:
-                train_iter = iter(train_stream)
-                X, Y = next(train_iter)
-
-            if X.device != device:
-                X = X.to(device, non_blocking=True)
-            if Y.device != device:
-                Y = Y.to(device, non_blocking=True)
+            X, Y = next_train_batch()
 
             with autocast_scope():
                 logits = model(X)

@@ -47,7 +47,7 @@ class TransformerBlock(nn.Module):
             attn_gate_dim=attn_gate_dim,
             attn_gate_lr_mul=attn_gate_lr_mul,
         )
-        self.attn.W_qkv._is_qkvo = True
+        # Muon relies on metadata on the parameter itself to split Q/K/V updates (set in attention.py).
         if use_swiglu:
             self.ffn = SwiGLU(d_model, d_ff, device=device, dtype=dtype)
         else:
