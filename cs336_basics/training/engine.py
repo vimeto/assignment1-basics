@@ -445,7 +445,7 @@ def train(cfg: ExperimentConfig) -> None:
                 if gtype == "matrix":
                     group["lr"] = matrix_lr_step
                 else:
-                    group["lr"] = matrix_lr_step
+                    group["lr"] = effective_vector_lr
         else:
             fallback_matrix_lr = matrix_base_lr
             for group in optimizer.param_groups:
@@ -453,7 +453,7 @@ def train(cfg: ExperimentConfig) -> None:
                 if gtype == "matrix":
                     group["lr"] = fallback_matrix_lr
                 else:
-                    group["lr"] = fallback_matrix_lr
+                    group["lr"] = effective_vector_lr
             effective_vector_lr = fallback_matrix_lr * vector_ratio
 
         # Momentum schedule for Muon matrices
@@ -581,7 +581,7 @@ def train(cfg: ExperimentConfig) -> None:
             try:
                 matrix_lr = next((g["lr"] for g in optimizer.param_groups if g.get("group_type") == "matrix"), None)
                 vector_group_lr = next((g["lr"] for g in optimizer.param_groups if g.get("group_type") == "vector"), None)
-                vector_lr = vector_group_lr
+                vector_lr = vector_group_lr if vector_group_lr is not None else effective_vector_lr
                 if matrix_lr is not None:
                     metrics["optimizer/matrix_lr"] = float(matrix_lr)
                 if matrix_lr is not None or vector_group_lr is not None:
