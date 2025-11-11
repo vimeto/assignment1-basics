@@ -577,9 +577,11 @@ def train(cfg: ExperimentConfig) -> None:
             }
 
             # Learning rates
+            vector_lr = None
             try:
                 matrix_lr = next((g["lr"] for g in optimizer.param_groups if g.get("group_type") == "matrix"), None)
                 vector_group_lr = next((g["lr"] for g in optimizer.param_groups if g.get("group_type") == "vector"), None)
+                vector_lr = vector_group_lr
                 if matrix_lr is not None:
                     metrics["optimizer/matrix_lr"] = float(matrix_lr)
                 if matrix_lr is not None or vector_group_lr is not None:
