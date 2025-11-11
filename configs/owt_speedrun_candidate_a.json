@@ -29,6 +29,7 @@
         "muon_momentum_cooldown_steps": 200,
         "muon_ns_steps": 5,
         "muon_lr_warmup_steps": 300,
+        "muon_lr_warmup_tokens": 100000000,
         "muon_lr_warmup_start": 0.006,
         "muon_lr_decay_start_tokens": 310000000,
         "muon_lr_decay_end_tokens": 760000000,
