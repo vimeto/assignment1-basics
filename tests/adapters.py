@@ -255,6 +255,8 @@ def run_transformer_block(
     theta: float,
     weights: dict[str, Tensor],
     in_features: Float[Tensor, " batch sequence_length d_model"],
+    *,
+    use_swiglu: bool = False,
 ) -> Float[Tensor, " batch sequence_length d_model"]:
     """
     Given the weights of a pre-norm Transformer block and input features,
@@ -312,6 +314,8 @@ def run_transformer_block(
                 Shape is (d_model,).
         in_features (Float[Tensor, "batch sequence_length d_model"]):
             Tensor to run your implementation on.
+        use_swiglu (bool): Whether to construct the FFN with the SwiGLU block so that the weights
+            can expose `ffn.w3`. Defaults to ``False`` (matching the standard ReLU² block).
 
     Returns:
         Float[Tensor, "batch sequence_length d_model"] Tensor with the output of
@@ -322,14 +326,15 @@ def run_transformer_block(
     from cs336_basics.modules.rope import RoPE
 
     rope = RoPE(theta, d_model // num_heads, max_seq_len)
-    block = TransformerBlock(d_model, num_heads, d_ff, rope=rope)
+    block = TransformerBlock(d_model, num_heads, d_ff, rope=rope, use_swiglu=use_swiglu)
 
     block.pre_attn_norm.gi.data = weights["ln1.weight"]
     block.pre_ffn_norm.gi.data = weights["ln2.weight"]
 
     block.ffn.w1.linear.data = weights["ffn.w1.weight"]
     block.ffn.w2.linear.data = weights["ffn.w2.weight"]
-    block.ffn.w3.linear.data = weights["ffn.w3.weight"]
+    if use_swiglu:
+        block.ffn.w3.linear.data = weights["ffn.w3.weight"]
 
     w = torch.cat([weights["attn.q_proj.weight"], weights["attn.k_proj.weight"], weights["attn.v_proj.weight"]], dim=0)
 
@@ -348,6 +353,8 @@ def run_transformer_lm(
     rope_theta: float,
     weights: dict[str, Tensor],
     in_indices: Int[Tensor, " batch_size sequence_length"],
+    *,
+    use_swiglu: bool = False,
 ) -> Float[Tensor, " batch_size sequence_length vocab_size"]:
     """Given the weights of a Transformer language model and input indices,
     return the output of running a forward pass on the input indices.
@@ -411,7 +418,9 @@ def run_transformer_lm(
                 Weights of the language model output embedding.
                 Shape is (vocab_size, d_model).
         in_indices (Int[Tensor, "batch_size sequence_length"]) Tensor with input indices to run the language model on. Shape is (batch_size, sequence_length), where
-            `sequence_length` is at most `context_length`.
+        `sequence_length` is at most `context_length`.
+        use_swiglu (bool): Whether to use SwiGLU in every Transformer block so the reference state dict
+            matches the checkpoint. Defaults to ``False`` so the ReLU² reference weights remain valid.
 
     Returns:
         Float[Tensor, "batch_size sequence_length vocab_size"]: Tensor with the predicted unnormalized
@@ -419,7 +428,16 @@ def run_transformer_lm(
     """
     from cs336_basics.modules.transformer_lm import TransformerLM
 
-    lm = TransformerLM(vocab_size, context_length, d_model, num_layers, num_heads, d_ff, rope_theta)
+    lm = TransformerLM(
+        vocab_size,
+        context_length,
+        d_model,
+        num_layers,
+        num_heads,
+        d_ff,
+        rope_theta,
+        use_swiglu=use_swiglu,
+    )
 
     lm.embedding.embedding_table.data = weights["token_embeddings.weight"]
     lm.norm.gi.data = weights["ln_final.weight"]
@@ -431,7 +449,8 @@ def run_transformer_lm(
 
         lm.layers[l].ffn.w1.linear.data = weights[f"layers.{l}.ffn.w1.weight"]
         lm.layers[l].ffn.w2.linear.data = weights[f"layers.{l}.ffn.w2.weight"]
-        lm.layers[l].ffn.w3.linear.data = weights[f"layers.{l}.ffn.w3.weight"]
+        if use_swiglu:
+            lm.layers[l].ffn.w3.linear.data = weights[f"layers.{l}.ffn.w3.weight"]
 
         w = torch.cat([weights[f"layers.{l}.attn.q_proj.weight"], weights[f"layers.{l}.attn.k_proj.weight"], weights[f"layers.{l}.attn.v_proj.weight"]], dim=0)
 

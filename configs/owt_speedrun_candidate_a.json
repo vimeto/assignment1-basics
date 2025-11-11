@@ -1,0 +1,94 @@
+{
+    "model": {
+        "context_length": 1024,
+        "d_model": 768,
+        "num_layers": 12,
+        "num_heads": 6,
+        "d_ff": 3072,
+        "use_qk_norm": true,
+        "use_unet_residual": true,
+        "unet_gate_init": -1.5,
+        "use_x0_mixin": false,
+        "tie_embeddings": false,
+        "use_value_embeddings": true,
+        "value_embed_lr_mul": 25,
+        "use_smear": true
+    },
+    "optimizer": {
+        "name": "muon",
+        "lr": 0.008,
+        "weight_decay": 0.001,
+        "matrix_weight_decay": 0.001,
+        "vector_weight_decay": 0.001,
+        "matrix_base_lr": 0.06,
+        "vector_lr_ratio": 0.08,
+        "muon_momentum": 0.95,
+        "muon_momentum_min": 0.85,
+        "muon_momentum_max": 0.95,
+        "muon_warmup_steps": 300,
+        "muon_momentum_cooldown_steps": 200,
+        "muon_ns_steps": 5,
+        "muon_lr_warmup_steps": 300,
+        "muon_lr_warmup_start": 0.006,
+        "muon_lr_decay_start_tokens": 310000000,
+        "muon_lr_decay_end_tokens": 760000000,
+        "muon_lr_final": 0.004,
+        "muon_momentum_warmup_tokens": 70000000,
+        "matrix_state_dtype": "bfloat16"
+    },
+    "training": {
+        "total_steps": 2400,
+        "batch_size": 56,
+        "grad_accum_steps": 8,
+        "grad_accum_reference": 16,
+        "seed": 7,
+        "device": "cuda",
+        "precision": "bfloat16",
+        "eval_interval": 200,
+        "eval_batches": 100,
+        "use_torch_compile": true,
+        "compile_mode": "default",
+        "logit_softcap": 20.0,
+        "z_loss_weight": 1e-05,
+        "softcap_warmup_steps": 0,
+        "softcap_warmup_tokens": 0,
+        "zloss_warmup_steps": 0,
+        "zloss_warmup_tokens": 0,
+        "num_workers": 4,
+        "pin_memory": true,
+        "persistent_workers": true,
+        "align_to_bos": false,
+        "compile_warmup_steps": 5,
+        "grad_accum_minutes_schedule": [
+            {
+                "minute": 0,
+                "value": 4
+            },
+            {
+                "minute": 30,
+                "value": 8
+            },
+            {
+                "minute": 65,
+                "value": 16
+            }
+        ]
+    },
+    "data": {
+        "train_path": "/data/data1/owt_train.npy",
+        "val_path": "/data/data1/owt_valid.npy",
+        "dtype": "uint16"
+    },
+    "checkpoint": {
+        "checkpoint_dir": "./checkpoints/owt_speedrun_candidate_a",
+        "save_interval": 1000,
+        "max_to_keep": 3
+    },
+    "logging": {
+        "log_interval": 10,
+        "use_wandb": true,
+        "project": "cs336-owt",
+        "entity": "vilhelm-toivonen-helsinki-university",
+        "run_name": "owt_speedrun_candidate_a"
+    }
+}

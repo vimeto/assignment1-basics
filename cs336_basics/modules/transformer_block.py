@@ -79,7 +79,8 @@ class TransformerBlock(nn.Module):
             seq_len = x.size(1)
             base = torch.arange(seq_len, device=x.device)
             pos = base.unsqueeze(0).expand(x.size(0), -1)
-        a_out = self.attn(self.pre_attn_norm(x) * self.lns_scale, pos, value_embed, sa_lambda)
+        pre_attn = self.pre_attn_norm(x)
+        a_out = self.attn(pre_attn * self.lns_scale, pos, value_embed, sa_lambda, gate_input=pre_attn)
         a_out = self.post_attn_norm(a_out)
         y = x + a_out * self.resid_attn_scale
 

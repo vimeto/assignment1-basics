@@ -35,6 +35,9 @@ def build_optimizer(cfg, parameters: Iterable[torch.nn.Parameter], base_lr: floa
         vector_lr = opt_cfg.vector_base_lr if opt_cfg.vector_base_lr is not None else matrix_lr * float(getattr(opt_cfg, "vector_lr_ratio", 0.1))
         matrix_state_dtype = TORCH_PRECISIONS.get(opt_cfg.matrix_state_dtype.lower()) if opt_cfg.matrix_state_dtype else torch.float32
         vector_state_dtype = TORCH_PRECISIONS.get(opt_cfg.vector_state_dtype.lower()) if opt_cfg.vector_state_dtype else torch.float32
+        vector_lr_multiplier = opt_cfg.vector_lr_multiplier
+        if vector_lr_multiplier is None:
+            vector_lr_multiplier = float(getattr(opt_cfg, "vector_lr_ratio", 0.1))
         optimizer = MuonAdamW(
             parameters,
             lr=base_lr,
@@ -46,7 +49,7 @@ def build_optimizer(cfg, parameters: Iterable[torch.nn.Parameter], base_lr: floa
             momentum_max=opt_cfg.muon_momentum_max or opt_cfg.muon_momentum,
             warmup_steps=opt_cfg.muon_warmup_steps,
             ns_steps=opt_cfg.muon_ns_steps,
-            vector_lr_multiplier=opt_cfg.vector_lr_multiplier,
+            vector_lr_multiplier=vector_lr_multiplier,
             betas=opt_cfg.betas,
             vector_eps=opt_cfg.eps,
             matrix_base_lr=matrix_lr,

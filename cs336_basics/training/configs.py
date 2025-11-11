@@ -54,7 +54,7 @@ class OptimizerConfig:
     matrix_weight_decay: float | None = None
     vector_weight_decay: float | None = None
     dtype: str | None = None
-    vector_lr_multiplier: float = 1.0
+    vector_lr_multiplier: float | None = None
     vector_lr_ratio: float = 0.1
     muon_momentum: float = 0.95
     muon_momentum_min: float | None = None

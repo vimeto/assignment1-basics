@@ -98,7 +98,14 @@ class MultiHeadAttention(nn.Module):
         else:
             self.attn_gate = None
 
-    def forward(self, x: torch.Tensor, token_positions: torch.Tensor | None = None, value_embed: torch.Tensor | None = None, sa_lambda: torch.Tensor | None = None) -> torch.Tensor:
+    def forward(
+        self,
+        x: torch.Tensor,
+        token_positions: torch.Tensor | None = None,
+        value_embed: torch.Tensor | None = None,
+        sa_lambda: torch.Tensor | None = None,
+        gate_input: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         # x: (B, S, d_model)
         B, S, _ = x.shape
 
@@ -133,8 +140,9 @@ class MultiHeadAttention(nn.Module):
 
         if self.attn_gate is not None:
             y = rearrange(y, "b h s d -> b s h d")
-            gate_input = x[..., :self.attn_gate_dim]
-            gate = torch.sigmoid(self.attn_gate(gate_input)).view(B, S, self.num_heads, 1)
+            gate_source = gate_input if gate_input is not None else x
+            gate_source = gate_source[..., :self.attn_gate_dim]
+            gate = torch.sigmoid(self.attn_gate(gate_source)).view(B, S, self.num_heads, 1)
             y = y * gate
             y = rearrange(y, "b s h d -> b s (h d)")
         else:

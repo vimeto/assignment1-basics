@@ -169,8 +169,8 @@ class TransformerLM(nn.Module):
             self.lm_head_weight = self.embedding.embedding_table
         else:
             self.ffn = Linear(d_model, vocab_size, device=device, dtype=dtype)
-            self.ffn.linear.lr_mul = getattr(param, "lr_mul", 1.0) * 0.5
-            self.ffn.linear.wd_mul = getattr(param, "wd_mul", 1.0)
+            self.ffn.linear.lr_mul = 0.5
+            self.ffn.linear.wd_mul = 1.0
         self.use_gradient_checkpointing = False
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:

@@ -37,6 +37,13 @@ TORCH_PRECISIONS = {
 }
 
 
+def _softcap_logits(logits: torch.Tensor, t: float) -> torch.Tensor:
+    t_val = float(t)
+    if t_val <= 0.0:
+        return logits
+    return t_val * torch.tanh(logits / t_val)
+
+
 def resolve_device(requested: str | None) -> torch.device:
     if requested:
         return torch.device(requested)
@@ -159,10 +166,9 @@ def evaluate(
                 logits = model(X)
                 raw_loss = cross_entropy(logits.reshape(-1, logits.size(-1)), Y.reshape(-1))
                 eval_logits = logits
-                if cfg.training.logit_softcap is not None:
-                    t_eff = float(cfg.training.logit_softcap)
-                    scale = t_eff * 2.0
-                    eval_logits = scale * torch.sigmoid(eval_logits / (scale / 4.0))
+                softcap_value = cfg.training.logit_softcap
+                if softcap_value is not None and softcap_value > 0.0:
+                    eval_logits = _softcap_logits(eval_logits, softcap_value)
                 loss = cross_entropy(eval_logits.reshape(-1, eval_logits.size(-1)), Y.reshape(-1))
                 if cfg.training.z_loss_weight > 0.0:
                     z = torch.logsumexp(eval_logits, dim=-1).pow(2).mean()
@@ -380,10 +386,6 @@ def train(cfg: ExperimentConfig) -> None:
     except Exception:
         wandb_run = None
 
-    def _apply_softcap_train(logits: torch.Tensor, t_eff: float) -> torch.Tensor:
-        scale = t_eff * 2.0
-        return scale * torch.sigmoid(logits / (scale / 4.0))
-
     train_start_time = time.perf_counter()
     previous_grad_accum: int | None = None
 
@@ -403,6 +405,7 @@ def train(cfg: ExperimentConfig) -> None:
         matrix_base_lr = getattr(optimizer, "_matrix_base_lr", opt_cfg.matrix_base_lr or base_lr)
         vector_ratio = float(getattr(optimizer, "_vector_lr_ratio", getattr(opt_cfg, "vector_lr_ratio", 0.1)))
         has_matrix_group = any(g.get("group_type") == "matrix" for g in optimizer.param_groups)
+        effective_vector_lr = matrix_base_lr * vector_ratio
 
         if has_matrix_group:
 
@@ -436,22 +439,22 @@ def train(cfg: ExperimentConfig) -> None:
 
             matrix_lr_step = max(matrix_lr_step, 0.0)
 
-            vector_lr_step = matrix_lr_step * vector_ratio
+            effective_vector_lr = matrix_lr_step * vector_ratio
             for group in optimizer.param_groups:
                 gtype = group.get("group_type")
                 if gtype == "matrix":
                     group["lr"] = matrix_lr_step
                 else:
-                    group["lr"] = vector_lr_step
+                    group["lr"] = matrix_lr_step
         else:
             fallback_matrix_lr = matrix_base_lr
-            vector_lr_step = fallback_matrix_lr * vector_ratio
             for group in optimizer.param_groups:
                 gtype = group.get("group_type")
                 if gtype == "matrix":
                     group["lr"] = fallback_matrix_lr
                 else:
-                    group["lr"] = vector_lr_step
+                    group["lr"] = fallback_matrix_lr
+            effective_vector_lr = fallback_matrix_lr * vector_ratio
 
         # Momentum schedule for Muon matrices
         if isinstance(optimizer, torch.optim.Optimizer):
@@ -503,9 +506,10 @@ def train(cfg: ExperimentConfig) -> None:
                         Y.reshape(-1),
                     )
                 train_logits = logits
-                if cfg.training.logit_softcap is not None and model.training:
-                    t_eff = float(cfg.training.logit_softcap) / max(1e-3, softcap_frac)
-                    train_logits = _apply_softcap_train(train_logits, t_eff)
+                softcap_value = cfg.training.logit_softcap
+                if softcap_value is not None and softcap_value > 0.0 and model.training:
+                    t_eff = float(softcap_value) / max(1e-3, softcap_frac)
+                    train_logits = _softcap_logits(train_logits, t_eff)
 
                 micro_loss = cross_entropy(train_logits.reshape(-1, train_logits.size(-1)), Y.reshape(-1))
                 if model.training and cfg.training.z_loss_weight > 0.0:
@@ -575,16 +579,17 @@ def train(cfg: ExperimentConfig) -> None:
             # Learning rates
             try:
                 matrix_lr = next((g["lr"] for g in optimizer.param_groups if g.get("group_type") == "matrix"), None)
-                vector_lr = next((g["lr"] for g in optimizer.param_groups if g.get("group_type") == "vector"), None)
+                vector_group_lr = next((g["lr"] for g in optimizer.param_groups if g.get("group_type") == "vector"), None)
                 if matrix_lr is not None:
                     metrics["optimizer/matrix_lr"] = float(matrix_lr)
-                if vector_lr is not None:
-                    metrics["optimizer/vector_lr"] = float(vector_lr)
+                if matrix_lr is not None or vector_group_lr is not None:
+                    metrics["optimizer/vector_lr"] = float(effective_vector_lr)
                 # Also log generic LR if not using group-specific
-                if matrix_lr is None and vector_lr is None and hasattr(optimizer, "param_groups"):
+                if matrix_lr is None and vector_group_lr is None and hasattr(optimizer, "param_groups"):
                     generic_lr = optimizer.param_groups[0].get("lr")
                     if generic_lr is not None:
                         metrics["optimizer/lr"] = float(generic_lr)
+                metrics["optimizer/vector_lr_ratio"] = float(vector_ratio)
             except Exception:
                 pass
 
