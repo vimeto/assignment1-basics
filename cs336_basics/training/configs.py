@@ -4,7 +4,7 @@ import dataclasses
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Tuple, Iterable
 
 
 @dataclass(frozen=True)
@@ -173,6 +173,53 @@ def _load_json(path: Path) -> dict[str, Any]:
         return json.load(fh)
 
 
+def _merge_dicts(base: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:
+    result = dict(base)
+    for key, value in overrides.items():
+        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+            result[key] = _merge_dicts(result[key], value)
+        else:
+            result[key] = value
+    return result
+
+
+def _normalize_inherit_entries(value: Any) -> Iterable[Path]:
+    if value is None:
+        return []
+    if isinstance(value, (str, Path)):
+        return [Path(value)]
+    if isinstance(value, Iterable):
+        normalized: list[Path] = []
+        for item in value:
+            if isinstance(item, (str, Path)):
+                normalized.append(Path(item))
+            else:
+                raise ValueError(f"Unsupported inherit entry type: {type(item)!r}")
+        return normalized
+    raise ValueError(f"Unsupported inherit value type: {type(value)!r}")
+
+
+def _load_with_inheritance(config_path: Path, seen: set[Path]) -> dict[str, Any]:
+    resolved = config_path.resolve()
+    if resolved in seen:
+        raise ValueError(f"Cycle detected while loading configs: {resolved}")
+    seen.add(resolved)
+    try:
+        data = _load_json(resolved)
+        inherit_value = data.pop("inherit", None)
+        if inherit_value is None:
+            return data
+
+        merged: dict[str, Any] = {}
+        for entry in _normalize_inherit_entries(inherit_value):
+            entry_path = entry if entry.is_absolute() else (resolved.parent / entry)
+            parent_data = _load_with_inheritance(entry_path, seen)
+            merged = _merge_dicts(merged, parent_data)
+        return _merge_dicts(merged, data)
+    finally:
+        seen.remove(resolved)
+
+
 def _replace_dataclass(instance: Any, overrides: dict[str, Any]) -> Any:
     if overrides is None:
         return instance
@@ -267,7 +314,7 @@ def _coerce_config_types(cfg: ExperimentConfig) -> ExperimentConfig:
 def load_config(config_path: Path | None) -> ExperimentConfig:
     base = ExperimentConfig()
     if config_path:
-        overrides = _load_json(config_path)
+        overrides = _load_with_inheritance(Path(config_path), set())
         base = _replace_dataclass(base, overrides)
     return _coerce_config_types(base)
 

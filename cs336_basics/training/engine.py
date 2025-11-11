@@ -403,9 +403,22 @@ def train(cfg: ExperimentConfig) -> None:
         # Muon-specific LR scheduling drives both matrix and vector learning rates
         opt_cfg = cfg.optimizer
         matrix_base_lr = getattr(optimizer, "_matrix_base_lr", opt_cfg.matrix_base_lr or base_lr)
-        vector_ratio = float(getattr(optimizer, "_vector_lr_ratio", getattr(opt_cfg, "vector_lr_ratio", 0.1)))
+        vector_base_lr = getattr(
+            optimizer,
+            "_vector_base_lr",
+            opt_cfg.vector_base_lr if opt_cfg.vector_base_lr is not None else opt_cfg.lr or base_lr,
+        )
+        vector_ratio = float(
+            getattr(
+                optimizer,
+                "_vector_lr_ratio",
+                (vector_base_lr / max(matrix_base_lr, 1e-12)) if matrix_base_lr > 0 else getattr(opt_cfg, "vector_lr_ratio", 0.0),
+            )
+        )
         has_matrix_group = any(g.get("group_type") == "matrix" for g in optimizer.param_groups)
-        effective_vector_lr = matrix_base_lr * vector_ratio
+        matrix_lr_step = matrix_base_lr
+        schedule_scale = 1.0
+        effective_vector_lr = vector_base_lr
 
         if has_matrix_group:
 
@@ -439,22 +452,35 @@ def train(cfg: ExperimentConfig) -> None:
 
             matrix_lr_step = max(matrix_lr_step, 0.0)
 
-            effective_vector_lr = matrix_lr_step * vector_ratio
+            schedule_scale = (matrix_lr_step / max(matrix_base_lr, 1e-12)) if matrix_base_lr > 0 else 0.0
+            effective_vector_lr = max(0.0, vector_base_lr * schedule_scale)
+            vector_group_lr = None
             for group in optimizer.param_groups:
                 gtype = group.get("group_type")
                 if gtype == "matrix":
                     group["lr"] = matrix_lr_step
                 else:
-                    group["lr"] = effective_vector_lr
+                    base_group_lr = group.get("base_lr", vector_base_lr)
+                    group_lr = max(0.0, base_group_lr * schedule_scale)
+                    group["lr"] = group_lr
+                    if gtype == "vector" and vector_group_lr is None:
+                        vector_group_lr = group_lr
+            if vector_group_lr is not None:
+                effective_vector_lr = vector_group_lr
         else:
             fallback_matrix_lr = matrix_base_lr
+            vector_group_lr = None
             for group in optimizer.param_groups:
                 gtype = group.get("group_type")
-                if gtype == "matrix":
-                    group["lr"] = fallback_matrix_lr
-                else:
-                    group["lr"] = effective_vector_lr
-            effective_vector_lr = fallback_matrix_lr * vector_ratio
+                base_group_lr = group.get("base_lr", fallback_matrix_lr if gtype == "matrix" else vector_base_lr)
+                group_lr = max(0.0, base_group_lr * schedule_scale)
+                group["lr"] = group_lr
+                if gtype == "vector" and vector_group_lr is None:
+                    vector_group_lr = group_lr
+            if vector_group_lr is not None:
+                effective_vector_lr = vector_group_lr
+            else:
+                effective_vector_lr = max(0.0, vector_base_lr * schedule_scale)
 
         # Momentum schedule for Muon matrices
         if isinstance(optimizer, torch.optim.Optimizer):
@@ -585,7 +611,7 @@ def train(cfg: ExperimentConfig) -> None:
                 if matrix_lr is not None:
                     metrics["optimizer/matrix_lr"] = float(matrix_lr)
                 if matrix_lr is not None or vector_group_lr is not None:
-                    metrics["optimizer/vector_lr"] = float(effective_vector_lr)
+                    metrics["optimizer/vector_lr"] = float(vector_lr)
                 # Also log generic LR if not using group-specific
                 if matrix_lr is None and vector_group_lr is None and hasattr(optimizer, "param_groups"):
                     generic_lr = optimizer.param_groups[0].get("lr")

@@ -53,9 +53,8 @@ class TransformerBlock(nn.Module):
         else:
             self.ffn = ReLU2_FFN(d_model, d_ff, device=device, dtype=dtype)
 
-        depth = max(1, layer_idx + 1)
-        # LayerNorm Scaling (LNS): scale pre-norm outputs by 1/sqrt(depth)
-        self.lns_scale = 1.0 / math.sqrt(depth)
+        # LayerNorm Scaling (LNS): constant 1/sqrt(total_layers) instead of depth-dependent scaling
+        self.lns_scale = 1.0 / math.sqrt(max(1, num_layers))
 
         # Residual scales (LayerScale-like) near 1/sqrt(2L)
         init = 1.0 / math.sqrt(max(1, 2 * num_layers))

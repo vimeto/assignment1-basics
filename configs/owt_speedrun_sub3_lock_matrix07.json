@@ -1,0 +1,18 @@
+{
+    "inherit": "owt_speedrun_sub3_lock.json",
+    "optimizer": {
+        "matrix_base_lr": 0.07,
+        "vector_base_lr": 0.008,
+        "vector_lr_ratio": 0.15,
+        "vector_weight_decay": 0.0
+    },
+    "model": {
+        "attn_gate_dim": 16,
+        "value_embed_lr_mul": 60
+    },
+    "training": {
+        "eval_batches": 180,
+        "logit_softcap": 24.0,
+        "z_loss_weight": 1.25e-05
+    }
+}
