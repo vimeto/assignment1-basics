@@ -12,7 +12,7 @@ import torch
 from cs336_basics.training.configs import ExperimentConfig, serialize_config
 from cs336_basics.training.optim import build_optimizer, zero_grads_for
 from cs336_basics.training.schedules import trapezoid_schedule
-from cs336_basics.training.data import build_eval_loader
+from cs336_basics.training.data import build_eval_loader, build_train_loader
 from cs336_basics.modules.transformer_lm import TransformerLM
 from cs336_basics.modules.cross_entropy import cross_entropy
 from cs336_basics.modules.checkpointing import save_checkpoint as module_save_checkpoint, load_checkpoint as module_load_checkpoint
@@ -69,6 +69,17 @@ def resolve_base_learning_rate(cfg: ExperimentConfig) -> float:
     if cfg.optimizer.lr is not None:
         return float(cfg.optimizer.lr)
     return 3e-4
+
+
+def _max_configured_grad_accum(training_cfg: Any) -> int:
+    values = [max(1, int(training_cfg.grad_accum_steps))]
+    if training_cfg.grad_accum_schedule:
+        for _, value in training_cfg.grad_accum_schedule:
+            values.append(max(1, int(value)))
+    if training_cfg.grad_accum_minutes_schedule:
+        for _, value in training_cfg.grad_accum_minutes_schedule:
+            values.append(max(1, int(value)))
+    return max(values) if values else 1
 
 
 def build_model(cfg: ExperimentConfig, device: torch.device, dtype: torch.dtype) -> TransformerLM:
@@ -243,36 +254,63 @@ def train(cfg: ExperimentConfig) -> None:
 
     bos_token_id = cfg.data.bos_token_id if cfg.data.bos_token_id is not None else cfg.data.end_of_text_token_id
 
-    train_dataset = LMSequenceDataset(train_tokens, context_length=cfg.model.context_length)
-    if cfg.training.align_to_bos and bos_token_id is not None:
-        train_sampler = BOSAlignedSampler(
-            train_tokens,
-            context_length=cfg.model.context_length,
-            bos_token_id=bos_token_id,
-            rng=rng,
-        )
+    requested_train_ctx = getattr(cfg.training, "train_context_length", None)
+    if requested_train_ctx is not None and requested_train_ctx > 0:
+        train_context_length = int(requested_train_ctx)
     else:
-        train_sampler = RandomizedStridedIndexSampler(len(train_dataset), rng=rng)
+        train_context_length = int(cfg.model.context_length)
 
-    train_loader = torch.utils.data.DataLoader(
-        train_dataset,
-        batch_size=cfg.training.batch_size,
-        sampler=train_sampler,
-        num_workers=cfg.training.num_workers,
-        pin_memory=cfg.training.pin_memory,
-        persistent_workers=cfg.training.persistent_workers,
-        drop_last=True,
-    )
-    train_prefetcher = DevicePrefetcher(train_loader, device=device)
+    use_random_loader = bool(getattr(cfg.training, "use_random_loader", False))
 
-    def next_train_batch() -> tuple[torch.Tensor, torch.Tensor]:
-        X, Y = train_prefetcher.next()
-        if X is None or Y is None:
-            train_prefetcher.reset()
+    if use_random_loader:
+        random_loader = build_train_loader(
+            train_tokens,
+            batch_size=cfg.training.batch_size,
+            context_length=train_context_length,
+            device=device,
+            rng=rng,
+            align_to_bos=cfg.training.align_to_bos,
+            bos_token_id=bos_token_id,
+        )
+        train_iterator = iter(random_loader)
+
+        def next_train_batch() -> tuple[torch.Tensor, torch.Tensor]:
+            try:
+                return next(train_iterator)
+            except StopIteration as exc:  # pragma: no cover - RandomBatchStream is infinite
+                raise RuntimeError("random train loader produced no batches") from exc
+
+    else:
+        train_dataset = LMSequenceDataset(train_tokens, context_length=train_context_length)
+        if cfg.training.align_to_bos and bos_token_id is not None:
+            train_sampler = BOSAlignedSampler(
+                train_tokens,
+                context_length=train_context_length,
+                bos_token_id=bos_token_id,
+                rng=rng,
+            )
+        else:
+            train_sampler = RandomizedStridedIndexSampler(len(train_dataset), rng=rng)
+
+        train_loader = torch.utils.data.DataLoader(
+            train_dataset,
+            batch_size=cfg.training.batch_size,
+            sampler=train_sampler,
+            num_workers=cfg.training.num_workers,
+            pin_memory=cfg.training.pin_memory,
+            persistent_workers=cfg.training.persistent_workers,
+            drop_last=True,
+        )
+        train_prefetcher = DevicePrefetcher(train_loader, device=device)
+
+        def next_train_batch() -> tuple[torch.Tensor, torch.Tensor]:
             X, Y = train_prefetcher.next()
             if X is None or Y is None:
-                raise RuntimeError("train dataloader produced no batches")
-        return X, Y
+                train_prefetcher.reset()
+                X, Y = train_prefetcher.next()
+                if X is None or Y is None:
+                    raise RuntimeError("train dataloader produced no batches")
+            return X, Y
 
     use_autocast = device.type == "cuda" and cfg.training.precision.lower() in {"float16", "bfloat16"}
     amp_dtype = torch.float16 if cfg.training.precision.lower() == "float16" else torch.bfloat16
@@ -315,7 +353,7 @@ def train(cfg: ExperimentConfig) -> None:
                 break
         return value
 
-    batch_tokens = int(cfg.training.batch_size) * int(cfg.model.context_length)
+    batch_tokens = int(cfg.training.batch_size) * int(train_context_length)
     reference_grad_accum = int(cfg.training.grad_accum_reference or grad_accum_default)
     reference_tokens_per_step = max(1, batch_tokens * reference_grad_accum)
     planned_total_tokens = max(1, cfg.training.total_steps * reference_tokens_per_step)

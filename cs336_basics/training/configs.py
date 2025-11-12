@@ -106,6 +106,8 @@ class TrainingConfig:
     pin_memory: bool = True
     persistent_workers: bool = False
     align_to_bos: bool = False
+    train_context_length: int | None = None
+    use_random_loader: bool = False
     compile_warmup_steps: int = 0
     ema_decay: float | None = None
     ema_update_interval: int = 1
@@ -276,6 +278,8 @@ def _coerce_config_types(cfg: ExperimentConfig) -> ExperimentConfig:
     training_kwargs: dict[str, Any] = {}
     if training.grad_accum_reference is not None:
         training_kwargs["grad_accum_reference"] = int(training.grad_accum_reference)
+    if training.train_context_length is not None:
+        training_kwargs["train_context_length"] = int(training.train_context_length)
     if training.softcap_warmup_tokens is not None:
         training_kwargs["softcap_warmup_tokens"] = int(training.softcap_warmup_tokens)
     if training.zloss_warmup_tokens is not None:
