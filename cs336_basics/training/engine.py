@@ -229,9 +229,10 @@ def train(cfg: ExperimentConfig) -> None:
     val_rng = np.random.default_rng(cfg.training.seed + 1)  # Fixed seed for consistent validation
 
     model = build_model(cfg, device=device, dtype=dtype)
+    using_torch_compile = bool(cfg.training.use_torch_compile and hasattr(torch, "compile"))
     if cfg.training.use_gradient_checkpointing:
         model.use_gradient_checkpointing = True
-    if cfg.training.use_torch_compile and hasattr(torch, "compile"):
+    if using_torch_compile:
         model = torch.compile(model, mode=cfg.training.compile_mode)  # type: ignore
 
     model_params = list(model.parameters())
@@ -280,6 +281,10 @@ def train(cfg: ExperimentConfig) -> None:
         "cuda",
         enabled=use_autocast and cfg.training.precision.lower() == "float16",
     )
+
+    cudagraph_mark_step_begin = None
+    if using_torch_compile:
+        cudagraph_mark_step_begin = getattr(getattr(torch, "compiler", None), "cudagraph_mark_step_begin", None)
 
     ema_state: dict[str, torch.Tensor] | None = None
     if cfg.training.ema_decay is not None and cfg.training.ema_decay > 0.0:
@@ -570,6 +575,12 @@ def train(cfg: ExperimentConfig) -> None:
         raw_losses: list[float] = []
         for _ in range(current_grad_accum):
             X, Y = next_train_batch()
+
+            if cudagraph_mark_step_begin is not None:
+                try:
+                    cudagraph_mark_step_begin()
+                except Exception:
+                    pass
 
             with autocast_scope():
                 logits = model(X)
