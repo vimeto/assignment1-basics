@@ -9,7 +9,7 @@ import time
 import numpy as np
 import torch
 
-from cs336_basics.training.configs import ExperimentConfig
+from cs336_basics.training.configs import ExperimentConfig, serialize_config
 from cs336_basics.training.optim import build_optimizer, zero_grads_for
 from cs336_basics.training.schedules import trapezoid_schedule
 from cs336_basics.training.data import build_eval_loader
@@ -357,34 +357,81 @@ def train(cfg: ExperimentConfig) -> None:
     seen_tokens = 0
     start_step = 0
     wandb_run = None
-    try:
-        import wandb  # optional
+    wandb_module = None
+    wandb_enabled = bool(cfg.logging.use_wandb)
+    wandb_config_payload: dict[str, Any] | None = None
+    wandb_summary_stats: dict[str, float] = {}
+    wandb_pending_logs: list[dict[str, float | None]] = []
+    wandb_init_after_step = max(1, int(cfg.training.compile_warmup_steps or 0) + 1)
 
-        if cfg.logging.use_wandb:
-            # Prepare comprehensive config for wandb
-            from cs336_basics.training.configs import serialize_config
-            config_dict = serialize_config(cfg)
+    if wandb_enabled:
+        try:
+            import wandb as wandb_module  # optional
+            wandb_config_payload = serialize_config(cfg)
+            try:
+                num_params = sum(p.numel() for p in model.parameters())
+                num_trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+                wandb_summary_stats = {
+                    "model/total_parameters": float(num_params),
+                    "model/trainable_parameters": float(num_trainable_params),
+                    "model/parameter_size_mb": float(num_params) * 4 / (1024**2),
+                }
+            except Exception:
+                wandb_summary_stats = {}
+        except Exception as exc:  # pragma: no cover - wandb optional
+            print(f"Warning: W&B unavailable ({exc})")
+            wandb_enabled = False
+            wandb_module = None
 
-            wandb_run = wandb.init(
+    def _maybe_flush_wandb_logs() -> None:
+        if wandb_run is None:
+            return
+        while wandb_pending_logs:
+            payload = wandb_pending_logs.pop(0)
+            try:
+                wandb_run.log(payload)  # type: ignore[arg-type]
+            except Exception:
+                pass
+
+    def _log_to_wandb(metrics: dict[str, float | None], step_value: int) -> None:
+        if not wandb_enabled:
+            return
+        payload = dict(metrics)
+        payload["step"] = step_value
+        if wandb_run is not None:
+            try:
+                wandb_run.log(payload)  # type: ignore[arg-type]
+            except Exception:
+                pass
+        else:
+            wandb_pending_logs.append(payload)
+
+    def _maybe_init_wandb(step_value: int) -> None:
+        nonlocal wandb_run, wandb_enabled
+        if not wandb_enabled or wandb_module is None or wandb_run is not None:
+            return
+        if step_value < wandb_init_after_step:
+            return
+        try:
+            wandb_run_local = wandb_module.init(
                 project=cfg.logging.project,
                 entity=cfg.logging.entity,
                 name=cfg.logging.run_name,
                 mode=cfg.logging.mode,
-                config=config_dict,
+                config=wandb_config_payload,
             )
-
-            # Log model architecture info
-            if wandb_run is not None:
+        except Exception as exc:  # pragma: no cover - wandb optional
+            print(f"Warning: Failed to initialize W&B logging ({exc})")
+            wandb_enabled = False
+            return
+        wandb_run = wandb_run_local
+        if wandb_run is not None:
+            for key, value in wandb_summary_stats.items():
                 try:
-                    num_params = sum(p.numel() for p in model.parameters())
-                    num_trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-                    wandb_run.summary["model/total_parameters"] = num_params
-                    wandb_run.summary["model/trainable_parameters"] = num_trainable_params
-                    wandb_run.summary["model/parameter_size_mb"] = num_params * 4 / (1024**2)  # Assuming fp32
+                    wandb_run.summary[key] = value  # type: ignore[index]
                 except Exception:
                     pass
-    except Exception:
-        wandb_run = None
+        _maybe_flush_wandb_logs()
 
     train_start_time = time.perf_counter()
     previous_grad_accum: int | None = None
@@ -591,6 +638,8 @@ def train(cfg: ExperimentConfig) -> None:
                 else:
                     target.mul_(decay).add_(param.detach().float().cpu(), alpha=one_minus)
 
+        _maybe_init_wandb(current_step)
+
         if (step + 1) % cfg.logging.log_interval == 0 or step == start_step:
             mean_micro_loss = float(np.mean(micro_losses)) if micro_losses else float("nan")
             mean_raw_loss = float(np.mean(raw_losses)) if raw_losses else float("nan")
@@ -657,11 +706,7 @@ def train(cfg: ExperimentConfig) -> None:
                 metrics["train/loss_raw_min"] = float(np.min(raw_losses))
                 metrics["train/loss_raw_max"] = float(np.max(raw_losses))
 
-            if wandb_run is not None:
-                try:
-                    wandb_run.log({**metrics, "step": step + 1})  # type: ignore
-                except Exception:
-                    pass
+            _log_to_wandb(metrics, current_step)
 
             parts = [f"step={step+1}", f"train_loss={mean_micro_loss:.4f}"]
             if not math.isnan(mean_raw_loss):
@@ -697,18 +742,13 @@ def train(cfg: ExperimentConfig) -> None:
             )
 
             # Log validation metrics to wandb
-            if wandb_run is not None:
-                try:
-                    val_log_metrics = {
-                        "val/loss": val_metrics['loss'],
-                        "val/perplexity": val_metrics['perplexity'],
-                        "val/loss_raw": val_metrics['loss_raw'],
-                        "val/perplexity_raw": val_metrics['perplexity_raw'],
-                        "step": step + 1,
-                    }
-                    wandb_run.log(val_log_metrics)  # type: ignore
-                except Exception:
-                    pass
+            val_log_metrics = {
+                "val/loss": val_metrics['loss'],
+                "val/perplexity": val_metrics['perplexity'],
+                "val/loss_raw": val_metrics['loss_raw'],
+                "val/perplexity_raw": val_metrics['perplexity_raw'],
+            }
+            _log_to_wandb(val_log_metrics, current_step)
 
             if ema_backup is not None:
                 for name, p in model.named_parameters():
